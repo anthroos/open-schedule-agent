@@ -171,7 +171,9 @@ async def _run_bot(config) -> None:
     from .core.engine import SchedulingEngine
     from .database import Database
 
-    db = Database()
+    import os
+    db_path = os.environ.get("DATABASE_PATH", "schedulebot.db")
+    db = Database(db_path)
     db.connect()
 
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
