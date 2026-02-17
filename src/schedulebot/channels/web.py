@@ -1,7 +1,5 @@
 """Web channel adapter using FastAPI. Includes schedule management API."""
 
-from __future__ import annotations
-
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -41,7 +39,7 @@ class WebAdapter(ChannelAdapter):
 
     async def start(self) -> None:
         try:
-            from fastapi import FastAPI, Header, HTTPException
+            from fastapi import FastAPI, HTTPException, Request
             from fastapi.middleware.cors import CORSMiddleware
             from pydantic import BaseModel
             import uvicorn
@@ -60,10 +58,11 @@ class WebAdapter(ChannelAdapter):
 
         adapter = self
 
-        # --- Auth helper ---
-        def check_api_key(authorization: str | None):
+        # --- Auth helper (extracts header from Request object) ---
+        def check_api_key(request: Request):
             if adapter.api_key:
-                if not authorization or authorization.replace("Bearer ", "") != adapter.api_key:
+                auth = request.headers.get("authorization", "")
+                if not auth or auth.replace("Bearer ", "") != adapter.api_key:
                     raise HTTPException(status_code=401, detail="Invalid API key")
 
         # --- Guest messaging ---
@@ -103,21 +102,9 @@ class WebAdapter(ChannelAdapter):
             end_time: str
             is_blocked: bool = False
 
-        class RuleResponse(BaseModel):
-            id: int
-            day_of_week: str
-            specific_date: str
-            start_time: str
-            end_time: str
-            is_blocked: bool
-
-        class RulesListResponse(BaseModel):
-            rules: list
-            summary: str
-
         @app.get("/api/schedule")
-        async def get_schedule(authorization: Optional[str] = Header(None)):
-            check_api_key(authorization)
+        async def get_schedule(request: Request):
+            check_api_key(request)
             if not adapter.db:
                 raise HTTPException(status_code=500, detail="Database not available")
             rules = adapter.db.get_availability_rules()
@@ -137,8 +124,8 @@ class WebAdapter(ChannelAdapter):
             }
 
         @app.post("/api/schedule/rules")
-        async def add_rule(req: RuleRequest, authorization: Optional[str] = Header(None)):
-            check_api_key(authorization)
+        async def add_rule(req: RuleRequest, request: Request):
+            check_api_key(request)
             if not adapter.db:
                 raise HTTPException(status_code=500, detail="Database not available")
             from ..models import AvailabilityRule
@@ -153,8 +140,8 @@ class WebAdapter(ChannelAdapter):
             return {"id": rule_id, "status": "created"}
 
         @app.delete("/api/schedule/rules/{rule_id}")
-        async def delete_rule(rule_id: int, authorization: Optional[str] = Header(None)):
-            check_api_key(authorization)
+        async def delete_rule(rule_id: int, request: Request):
+            check_api_key(request)
             if not adapter.db:
                 raise HTTPException(status_code=500, detail="Database not available")
             deleted = adapter.db.delete_availability_rule(rule_id)
@@ -163,12 +150,8 @@ class WebAdapter(ChannelAdapter):
             return {"status": "deleted"}
 
         @app.delete("/api/schedule/rules")
-        async def clear_rules(
-            day: str = "",
-            date: str = "",
-            authorization: Optional[str] = Header(None),
-        ):
-            check_api_key(authorization)
+        async def clear_rules(request: Request, day: str = "", date: str = ""):
+            check_api_key(request)
             if not adapter.db:
                 raise HTTPException(status_code=500, detail="Database not available")
             count = adapter.db.clear_availability_rules(day_of_week=day, specific_date=date)
