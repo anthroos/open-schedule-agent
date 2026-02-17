@@ -342,6 +342,7 @@ class SchedulingEngine:
             response_text = "Sorry, I'm having trouble right now. Please try again in a moment."
 
         # Parse LLM response for structured actions
+        logger.info(f"Guest LLM raw response: {response_text[-100:]}")
         action = self._parse_booking_action(response_text, slots, conv)
 
         if action == "book" and conv.selected_slot:
