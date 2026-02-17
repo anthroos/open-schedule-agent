@@ -1,4 +1,21 @@
-"""Anthropic tool definitions for owner schedule management."""
+"""Anthropic tool definitions for owner and guest flows."""
+
+GUEST_TOOLS = [
+    {
+        "name": "confirm_booking",
+        "description": "Confirm and book a meeting slot for the guest. Call this when the guest has chosen a specific slot. Use the 1-based slot number from the AVAILABLE SLOTS list in the system prompt.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "slot_number": {
+                    "type": "integer",
+                    "description": "The 1-based slot number from the AVAILABLE SLOTS list.",
+                },
+            },
+            "required": ["slot_number"],
+        },
+    },
+]
 
 OWNER_TOOLS = [
     {

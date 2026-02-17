@@ -1,4 +1,4 @@
-"""Tests for owner mode with Anthropic tool use (function calling).
+"""Tests for owner and guest mode with Anthropic tool use (function calling).
 
 Verifies that when the LLM provider supports chat_with_tools(),
 the engine executes tools and returns structured results instead
@@ -357,20 +357,15 @@ async def test_no_tools_called_text_only(config, db):
 
 
 @pytest.mark.asyncio
-async def test_tool_use_doesnt_affect_guest_flow(config, db):
-    """Guest flow still uses text-only chat(), not chat_with_tools()."""
+async def test_guest_flow_uses_tools_when_available(config, db):
+    """Guest flow uses chat_with_tools() when provider supports it."""
     from schedulebot.models import AvailabilityRule
 
     db.add_availability_rule(AvailabilityRule(day_of_week="monday", start_time="10:00", end_time="18:00"))
 
-    class GuestToolLLM(MockToolLLM):
-        """LLM that supports tools but chat() works for guest."""
-
-        async def chat(self, system_prompt: str, messages: list[dict]) -> str:
-            self._call_count += 1
-            return "Hi! I'd love to help you book a meeting with Ivan."
-
-    llm = GuestToolLLM(turns=[])
+    llm = MockToolLLM(turns=[
+        MockToolResponse(text="Hi! I'd love to help you book a meeting with Ivan.", stop_reason="end_turn"),
+    ])
     engine = SchedulingEngine(config, MockCalendar(), llm, db)
 
     result = await engine.handle_message(
@@ -379,6 +374,8 @@ async def test_tool_use_doesnt_affect_guest_flow(config, db):
 
     assert "book" in result.text.lower()
     assert llm._call_count == 1
+    # Verify tools were passed
+    assert any("confirm_booking" == t["name"] for t in llm.calls[0]["tools"])
 
 
 @pytest.mark.asyncio
@@ -422,3 +419,115 @@ async def test_conversation_persisted_after_tool_use(config, db):
     assert conv.messages[0]["role"] == "user"
     assert conv.messages[1]["role"] == "assistant"
     assert "Monday" in conv.messages[1]["content"]
+
+
+# ── Guest Tool-Use Tests ─────────────────────────────────
+
+
+@pytest.fixture
+def db_with_slots(db):
+    """DB pre-populated with Monday slots for guest testing."""
+    from schedulebot.models import AvailabilityRule
+
+    for hour in ["11:00", "14:00", "16:00", "19:00"]:
+        end_h = int(hour.split(":")[0])
+        db.add_availability_rule(
+            AvailabilityRule(day_of_week="monday", start_time=hour, end_time=f"{end_h}:30")
+        )
+    return db
+
+
+@pytest.mark.asyncio
+async def test_guest_booking_via_tool(config, db_with_slots):
+    """Guest picks a slot → LLM calls confirm_booking → booking created."""
+    llm = MockToolLLM(turns=[
+        # Turn 1: LLM calls confirm_booking
+        MockToolResponse(
+            text="",
+            tool_calls=[MockToolCall(
+                id="tc_1",
+                name="confirm_booking",
+                input={"slot_number": 2},
+            )],
+            stop_reason="tool_use",
+        ),
+        # Turn 2: LLM produces confirmation text after tool result
+        MockToolResponse(
+            text="You're all set! Meeting booked for Monday 14:00-14:30.",
+            stop_reason="end_turn",
+        ),
+    ])
+    engine = SchedulingEngine(config, MockCalendar(), llm, db_with_slots)
+
+    result = await engine.handle_message(
+        IncomingMessage(text="I'll take slot 2", sender_id="guest-100", sender_name="Guest", channel="test")
+    )
+
+    assert result.metadata.get("booking_id") is not None
+    assert result.metadata.get("meet_link") is not None
+    assert "booked" in result.text.lower() or "meeting" in result.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_guest_conversation_no_tools(config, db_with_slots):
+    """Guest says hello → LLM responds with text only, no tool calls."""
+    llm = MockToolLLM(turns=[
+        MockToolResponse(
+            text="Hi! I'm here to help you schedule a meeting. What's your name?",
+            stop_reason="end_turn",
+        ),
+    ])
+    engine = SchedulingEngine(config, MockCalendar(), llm, db_with_slots)
+
+    result = await engine.handle_message(
+        IncomingMessage(text="Hello", sender_id="guest-101", sender_name="Guest", channel="test")
+    )
+
+    assert "name" in result.text.lower()
+    assert result.metadata.get("booking_id") is None
+
+
+@pytest.mark.asyncio
+async def test_guest_invalid_slot_number(config, db_with_slots):
+    """Guest picks invalid slot number → error returned, no booking."""
+    llm = MockToolLLM(turns=[
+        MockToolResponse(
+            text="",
+            tool_calls=[MockToolCall(
+                id="tc_1",
+                name="confirm_booking",
+                input={"slot_number": 999},
+            )],
+            stop_reason="tool_use",
+        ),
+        MockToolResponse(
+            text="Sorry, that slot number doesn't seem valid. Could you pick from the available list?",
+            stop_reason="end_turn",
+        ),
+    ])
+    engine = SchedulingEngine(config, MockCalendar(), llm, db_with_slots)
+
+    result = await engine.handle_message(
+        IncomingMessage(text="Slot 999", sender_id="guest-102", sender_name="Guest", channel="test")
+    )
+
+    # No booking should be created
+    assert result.metadata.get("booking_id") is None
+
+
+@pytest.mark.asyncio
+async def test_guest_tools_passed_to_llm(config, db_with_slots):
+    """Verify GUEST_TOOLS are passed to chat_with_tools."""
+    llm = MockToolLLM(turns=[
+        MockToolResponse(text="Hi there!", stop_reason="end_turn"),
+    ])
+    engine = SchedulingEngine(config, MockCalendar(), llm, db_with_slots)
+
+    await engine.handle_message(
+        IncomingMessage(text="Hello", sender_id="guest-103", sender_name="Guest", channel="test")
+    )
+
+    assert len(llm.calls) == 1
+    tools = llm.calls[0]["tools"]
+    tool_names = {t["name"] for t in tools}
+    assert "confirm_booking" in tool_names

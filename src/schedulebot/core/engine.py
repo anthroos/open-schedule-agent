@@ -12,8 +12,13 @@ from ..config import Config
 from ..core.availability import AvailabilityEngine
 from ..database import Database
 from ..llm.base import LLMProvider
-from ..llm.prompts import build_owner_prompt, build_owner_prompt_tools, build_system_prompt
-from ..llm.tools import OWNER_TOOLS
+from ..llm.prompts import (
+    build_owner_prompt,
+    build_owner_prompt_tools,
+    build_system_prompt,
+    build_system_prompt_tools,
+)
+from ..llm.tools import GUEST_TOOLS, OWNER_TOOLS
 from ..models import (
     AvailabilityRule,
     Booking,
@@ -304,7 +309,7 @@ class SchedulingEngine:
     # ──────────────────────────────────────────────
 
     async def _handle_guest_message(self, msg: IncomingMessage) -> OutgoingMessage:
-        """Guest is trying to book a meeting."""
+        """Guest is trying to book a meeting. Routes to tool-use or text path."""
         conv = self.db.get_conversation(msg.sender_id)
         if not conv:
             conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
@@ -326,7 +331,105 @@ class SchedulingEngine:
             logger.error(f"Failed to get available slots: {e}")
             slots = []
 
-        # Build system prompt with current slots
+        # Branch: tool-use path (Anthropic) vs text-tag path (other providers)
+        if hasattr(self.llm, "chat_with_tools"):
+            result = await self._handle_guest_message_tools(conv, slots)
+        else:
+            result = await self._handle_guest_message_text(conv, slots)
+
+        self.db.save_conversation(conv)
+        return result
+
+    async def _handle_guest_message_tools(
+        self, conv: Conversation, slots: list[TimeSlot]
+    ) -> OutgoingMessage:
+        """Guest mode via Anthropic tool use."""
+        system_prompt = build_system_prompt_tools(
+            owner_name=self.config.owner.name,
+            slots=slots,
+            conversation_state=conv.state,
+            guest_name=conv.guest_name,
+        )
+
+        api_messages = self._build_api_messages(conv.messages)
+
+        # Tool-use loop: max 3 iterations
+        for _ in range(3):
+            try:
+                result = await self.llm.chat_with_tools(
+                    system_prompt, api_messages, GUEST_TOOLS
+                )
+            except Exception as e:
+                logger.error(f"LLM tool call failed (guest): {e}")
+                response = "Sorry, I'm having trouble right now. Please try again in a moment."
+                conv.add_message("assistant", response)
+                return OutgoingMessage(text=response)
+
+            if not result.tool_calls:
+                # No tools — just conversational text
+                conv.add_message("assistant", result.text)
+                return OutgoingMessage(text=result.text)
+
+            # Process tool calls
+            for tc in result.tool_calls:
+                if tc.name == "confirm_booking":
+                    slot_idx = tc.input.get("slot_number", 0) - 1
+                    booking = None
+                    if 0 <= slot_idx < len(slots):
+                        conv.selected_slot = slots[slot_idx]
+                        conv.state = ConversationState.CONFIRMATION
+                        booking = await self._create_booking(conv)
+                        tool_output = ""
+                        if booking:
+                            confirmation = self._format_confirmation(booking)
+                            conv.state = ConversationState.BOOKED
+                            tool_output = f"Booking confirmed: {confirmation}"
+                        else:
+                            tool_output = "Failed to create booking. Calendar may be unavailable."
+                    else:
+                        tool_output = f"Invalid slot number {slot_idx + 1}. Valid range: 1-{len(slots)}"
+
+                    logger.info(f"Guest tool confirm_booking(slot={slot_idx + 1}) → {tool_output[:80]}")
+
+                    # Send tool result back to LLM for final message
+                    assistant_content = []
+                    if result.text:
+                        assistant_content.append({"type": "text", "text": result.text})
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    })
+                    api_messages.append({"role": "assistant", "content": assistant_content})
+                    api_messages.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": tc.id, "content": tool_output}
+                    ]})
+
+                    # If booking succeeded, get final text from LLM
+                    if booking:
+                        try:
+                            final = await self.llm.chat_with_tools(
+                                system_prompt, api_messages, GUEST_TOOLS
+                            )
+                            final_text = final.text or confirmation
+                        except Exception:
+                            final_text = confirmation
+                        conv.add_message("assistant", final_text)
+                        return OutgoingMessage(
+                            text=final_text,
+                            metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
+                        )
+
+        # Fallback
+        response = result.text if result.text else "Something went wrong. Please try again."
+        conv.add_message("assistant", response)
+        return OutgoingMessage(text=response)
+
+    async def _handle_guest_message_text(
+        self, conv: Conversation, slots: list[TimeSlot]
+    ) -> OutgoingMessage:
+        """Guest mode via text-based [BOOK:N] tags (legacy)."""
         system_prompt = build_system_prompt(
             owner_name=self.config.owner.name,
             slots=slots,
@@ -334,7 +437,6 @@ class SchedulingEngine:
             guest_name=conv.guest_name,
         )
 
-        # Call LLM
         try:
             response_text = await self.llm.chat(system_prompt, conv.messages)
         except Exception as e:
@@ -342,7 +444,6 @@ class SchedulingEngine:
             response_text = "Sorry, I'm having trouble right now. Please try again in a moment."
 
         # Parse LLM response for structured actions
-        logger.info(f"Guest LLM raw response: {response_text[-100:]}")
         action = self._parse_booking_action(response_text, slots, conv)
 
         if action == "book" and conv.selected_slot:
@@ -351,17 +452,12 @@ class SchedulingEngine:
                 confirmation = self._format_confirmation(booking)
                 conv.state = ConversationState.BOOKED
                 conv.add_message("assistant", confirmation)
-                self.db.save_conversation(conv)
                 return OutgoingMessage(
                     text=confirmation,
                     metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
                 )
 
-        # Save conversation state
         conv.add_message("assistant", response_text)
-        self.db.save_conversation(conv)
-
-        # Strip action tags
         clean_text = re.sub(r"\s*\[BOOK:\S+\]", "", response_text)
         return OutgoingMessage(text=clean_text)
 
