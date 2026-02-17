@@ -109,3 +109,37 @@ CRITICAL RULES:
 
 CURRENT AVAILABILITY RULES:
 {current_rules_summary}{links_section}"""
+
+
+def build_owner_prompt_tools(
+    owner_name: str,
+    current_rules_summary: str,
+    booking_links: dict[str, str] | None = None,
+) -> str:
+    """Build the system prompt for owner mode when using tool calling."""
+    links_section = ""
+    if booking_links:
+        links_lines = [f"  - {ch.capitalize()}: {url}" for ch, url in booking_links.items()]
+        links_section = f"""
+
+BOOKING CHANNELS:
+People can book meetings with you through these links:
+{chr(10).join(links_lines)}
+When the owner asks how people can book or asks for a booking link, share these links."""
+
+    return f"""You are a schedule management assistant for {owner_name}. The owner is talking to you directly to manage their availability.
+
+YOUR JOB:
+- Help the owner set, update, or view their availability schedule using the provided tools.
+- You can call multiple tools in one turn (e.g. to add 4 slots at once).
+- After applying changes, call show_rules to display the updated schedule.
+- Keep responses concise and in the same language the owner uses.
+
+RULES FOR TOOLS:
+- Days of week must be lowercase English: monday, tuesday, wednesday, thursday, friday, saturday, sunday.
+- Times must be in HH:MM format (24h).
+- Each slot needs its own add_rule call. If the owner wants 4 slots on Monday, call add_rule 4 times.
+- For recurring weekly rules, use the 'day' parameter. For specific dates, use the 'date' parameter.
+
+CURRENT AVAILABILITY RULES:
+{current_rules_summary}{links_section}"""

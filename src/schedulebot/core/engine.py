@@ -12,7 +12,8 @@ from ..config import Config
 from ..core.availability import AvailabilityEngine
 from ..database import Database
 from ..llm.base import LLMProvider
-from ..llm.prompts import build_owner_prompt, build_system_prompt
+from ..llm.prompts import build_owner_prompt, build_owner_prompt_tools, build_system_prompt
+from ..llm.tools import OWNER_TOOLS
 from ..models import (
     AvailabilityRule,
     Booking,
@@ -62,7 +63,7 @@ class SchedulingEngine:
     # ──────────────────────────────────────────────
 
     async def _handle_owner_message(self, msg: IncomingMessage) -> OutgoingMessage:
-        """Owner is managing their schedule."""
+        """Owner is managing their schedule. Routes to tool-use or text path."""
         # Quick commands without LLM
         text_lower = msg.text.strip().lower()
         if text_lower in ("/schedule", "/rules", "/show"):
@@ -86,7 +87,78 @@ class SchedulingEngine:
 
         conv.add_message("user", msg.text)
 
-        # Build owner prompt
+        # Branch: tool-use path (Anthropic) vs text-tag path (other providers)
+        if hasattr(self.llm, "chat_with_tools"):
+            response_text = await self._handle_owner_message_tools(conv)
+        else:
+            response_text = await self._handle_owner_message_text(conv)
+
+        conv.add_message("assistant", response_text)
+        self.db.save_conversation(conv)
+
+        return OutgoingMessage(text=response_text)
+
+    async def _handle_owner_message_tools(self, conv: Conversation) -> str:
+        """Owner mode via Anthropic tool use. Returns clean text for user."""
+        rules_summary = self.db.format_availability_summary()
+        system_prompt = build_owner_prompt_tools(
+            owner_name=self.config.owner.name,
+            current_rules_summary=rules_summary,
+            booking_links=self.config.booking_links.links,
+        )
+
+        # Build API messages from conversation (only user/assistant text)
+        api_messages = self._build_api_messages(conv.messages)
+
+        # Tool-use loop: max 5 iterations
+        for _ in range(5):
+            try:
+                result = await self.llm.chat_with_tools(
+                    system_prompt, api_messages, OWNER_TOOLS
+                )
+            except Exception as e:
+                logger.error(f"LLM tool call failed (owner): {e}")
+                return "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
+
+            if not result.tool_calls:
+                # No tools called — LLM produced final text
+                return result.text
+
+            # Execute each tool call and collect results
+            tool_results = []
+            for tc in result.tool_calls:
+                output = self._execute_tool(tc.name, tc.input)
+                tool_results.append({"tool_use_id": tc.id, "content": output})
+                logger.info(f"Tool {tc.name}({tc.input}) → {output}")
+
+            # Build assistant message with text + tool_use blocks
+            assistant_content = []
+            if result.text:
+                assistant_content.append({"type": "text", "text": result.text})
+            for tc in result.tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                })
+            api_messages.append({"role": "assistant", "content": assistant_content})
+
+            # Build tool_result message
+            tool_result_content = []
+            for tr in tool_results:
+                tool_result_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tr["tool_use_id"],
+                    "content": tr["content"],
+                })
+            api_messages.append({"role": "user", "content": tool_result_content})
+
+        # Fallback if loop exhausted
+        return result.text if result.text else "Done. Use /schedule to see your current rules."
+
+    async def _handle_owner_message_text(self, conv: Conversation) -> str:
+        """Owner mode via text-based action tags (legacy). Returns clean text."""
         rules_summary = self.db.format_availability_summary()
         system_prompt = build_owner_prompt(
             owner_name=self.config.owner.name,
@@ -94,24 +166,70 @@ class SchedulingEngine:
             booking_links=self.config.booking_links.links,
         )
 
-        # Call LLM
         try:
             response_text = await self.llm.chat(system_prompt, conv.messages)
         except Exception as e:
             logger.error(f"LLM call failed (owner): {e}")
-            response_text = "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
+            return "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
 
         # Parse and execute owner actions
         response_text = self._execute_owner_actions(response_text)
 
-        conv.add_message("assistant", response_text)
-        self.db.save_conversation(conv)
-
         # Strip action tags from response
-        clean_text = re.sub(r"\[(?:ADD_RULE|BLOCK_RULE|CLEAR_RULES|CLEAR_ALL|SHOW_RULES)[^\]]*\]", "", response_text)
-        clean_text = clean_text.strip()
+        clean_text = re.sub(
+            r"\[(?:ADD_RULE|BLOCK_RULE|CLEAR_RULES|CLEAR_ALL|SHOW_RULES)[^\]]*\]", "", response_text
+        )
+        return clean_text.strip()
 
-        return OutgoingMessage(text=clean_text)
+    def _execute_tool(self, name: str, params: dict) -> str:
+        """Execute a single owner tool call. Returns result text."""
+        if name == "add_rule":
+            rule = AvailabilityRule(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+                start_time=params.get("start", ""),
+                end_time=params.get("end", ""),
+                is_blocked=False,
+            )
+            rule_id = self.db.add_availability_rule(rule)
+            target = rule.day_of_week or rule.specific_date
+            return f"Added availability rule #{rule_id}: {target} {rule.start_time}-{rule.end_time}"
+
+        if name == "block_time":
+            rule = AvailabilityRule(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+                start_time=params.get("start", ""),
+                end_time=params.get("end", ""),
+                is_blocked=True,
+            )
+            rule_id = self.db.add_availability_rule(rule)
+            target = rule.day_of_week or rule.specific_date
+            return f"Blocked #{rule_id}: {target} {rule.start_time}-{rule.end_time}"
+
+        if name == "clear_rules":
+            count = self.db.clear_availability_rules(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+            )
+            target = params.get("day", "") or params.get("date", "")
+            return f"Cleared {count} rules for {target}"
+
+        if name == "clear_all":
+            count = self.db.clear_availability_rules()
+            return f"Cleared all {count} rules"
+
+        if name == "show_rules":
+            return self.db.format_availability_summary()
+
+        return f"Unknown tool: {name}"
+
+    def _build_api_messages(self, messages: list[dict[str, str]]) -> list[dict]:
+        """Convert conversation messages to Anthropic API format."""
+        api_msgs = []
+        for m in messages:
+            api_msgs.append({"role": m["role"], "content": m["content"]})
+        return api_msgs
 
     def _execute_owner_actions(self, response: str) -> str:
         """Parse and execute action tags from LLM response."""

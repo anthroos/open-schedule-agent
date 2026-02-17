@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
+from typing import Any
 
 from .base import LLMProvider
 
 
+@dataclass
+class ToolCall:
+    """A single tool invocation from the LLM."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+@dataclass
+class LLMToolResponse:
+    """Response from chat_with_tools: text + tool calls."""
+
+    text: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    stop_reason: str = ""
+
+
 class AnthropicProvider(LLMProvider):
-    """Claude API integration."""
+    """Claude API integration with tool use support."""
 
     def __init__(self, model: str = "claude-haiku-4-20250414", api_key: str | None = None):
         self.model = model
@@ -28,6 +48,7 @@ class AnthropicProvider(LLMProvider):
         return self._client
 
     async def chat(self, system_prompt: str, messages: list[dict[str, str]]) -> str:
+        """Text-only chat (used by guest mode and backward compat)."""
         response = self.client.messages.create(
             model=self.model,
             max_tokens=2048,
@@ -35,3 +56,41 @@ class AnthropicProvider(LLMProvider):
             messages=messages,
         )
         return response.content[0].text
+
+    async def chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> LLMToolResponse:
+        """Chat with tool definitions. Returns text + any tool calls.
+
+        The caller is responsible for executing tools and sending results
+        back in a follow-up call if needed.
+        """
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2048,
+            system=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+
+        text_parts = []
+        tool_calls = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    input=block.input,
+                ))
+
+        return LLMToolResponse(
+            text=" ".join(text_parts) if text_parts else "",
+            tool_calls=tool_calls,
+            stop_reason=response.stop_reason,
+        )
