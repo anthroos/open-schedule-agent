@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,8 @@ from ..calendar.base import CalendarProvider
 from ..config import AvailabilityConfig
 from ..database import Database
 from ..models import AvailabilityRule, TimeSlot
+
+logger = logging.getLogger(__name__)
 
 DAYS_OF_WEEK = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
@@ -50,8 +53,12 @@ class AvailabilityEngine:
         if not raw_slots:
             return []
 
-        # Get calendar busy times
-        busy_times = await self.calendar.get_busy_times(min_start, end_date)
+        # Get calendar busy times (if calendar fails, return all slots)
+        try:
+            busy_times = await self.calendar.get_busy_times(min_start, end_date)
+        except Exception as e:
+            logger.warning(f"Calendar API failed, returning slots without busy check: {e}")
+            return raw_slots
 
         # Subtract busy times from raw slots
         available = self._subtract_busy(raw_slots, busy_times)
