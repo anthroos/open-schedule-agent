@@ -95,7 +95,11 @@ class SchedulingEngine:
         )
 
         # Call LLM
-        response_text = await self.llm.chat(system_prompt, conv.messages)
+        try:
+            response_text = await self.llm.chat(system_prompt, conv.messages)
+        except Exception as e:
+            logger.error(f"LLM call failed (owner): {e}")
+            response_text = "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
 
         # Parse and execute owner actions
         response_text = self._execute_owner_actions(response_text)
@@ -198,7 +202,11 @@ class SchedulingEngine:
         conv.add_message("user", msg.text)
 
         # Get available slots
-        slots = await self.availability.get_available_slots()
+        try:
+            slots = await self.availability.get_available_slots()
+        except Exception as e:
+            logger.error(f"Failed to get available slots: {e}")
+            slots = []
 
         # Build system prompt with current slots
         system_prompt = build_system_prompt(
@@ -209,7 +217,11 @@ class SchedulingEngine:
         )
 
         # Call LLM
-        response_text = await self.llm.chat(system_prompt, conv.messages)
+        try:
+            response_text = await self.llm.chat(system_prompt, conv.messages)
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            response_text = "Sorry, I'm having trouble right now. Please try again in a moment."
 
         # Parse LLM response for structured actions
         action = self._parse_booking_action(response_text, slots, conv)
