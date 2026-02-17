@@ -205,6 +205,8 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         path=mcp_data.get("path", "/mcp"),
     )
 
+    dry_run = os.environ.get("DRY_RUN", "").lower() in ("true", "1", "yes")
+
     return Config(
         owner=owner,
         availability=availability,
@@ -215,4 +217,5 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         booking_links=booking_links,
         services=services,
         mcp=mcp,
+        dry_run=dry_run,
     )

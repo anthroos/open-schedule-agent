@@ -152,7 +152,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     from .config import load_config
 
     config = load_config(args.config)
-    config.dry_run = args.dry_run
+    if args.dry_run:
+        config.dry_run = True
 
     if config.dry_run:
         print("Running in DRY RUN mode (no calendar events will be created)\n")
