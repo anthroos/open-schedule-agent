@@ -61,7 +61,7 @@ class WebAdapter(ChannelAdapter):
         adapter = self
 
         # --- Auth helper ---
-        def check_api_key(authorization: Optional[str] = Header(None)):
+        def check_api_key(authorization: str | None):
             if adapter.api_key:
                 if not authorization or authorization.replace("Bearer ", "") != adapter.api_key:
                     raise HTTPException(status_code=401, detail="Invalid API key")
