@@ -1,0 +1,11 @@
+services:
+  schedulebot:
+    build: .
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./.env:/app/.env
+      - ./token.json:/app/token.json
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped

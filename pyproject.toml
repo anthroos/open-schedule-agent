@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schedulebot"
+version = "0.1.0"
+description = "Open-source AI scheduling agent with pluggable channel adapters"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Ivan Pasichnyk", email = "ivan@welabeldata.com" },
+]
+keywords = ["scheduling", "calendar", "ai", "chatbot", "telegram", "slack"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "google-auth>=2.0",
+    "google-auth-oauthlib>=1.0",
+    "google-api-python-client>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.0"]
+telegram = ["python-telegram-bot>=21.0"]
+slack = ["slack-bolt>=1.18"]
+discord = ["discord.py>=2.3"]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
+all = [
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "python-telegram-bot>=21.0",
+    "slack-bolt>=1.18",
+    "discord.py>=2.3",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+schedulebot = "schedulebot.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/welabeldata/schedulebot"
+Repository = "https://github.com/welabeldata/schedulebot"
