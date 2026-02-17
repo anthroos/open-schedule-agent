@@ -30,7 +30,7 @@ class AnthropicProvider(LLMProvider):
     async def chat(self, system_prompt: str, messages: list[dict[str, str]]) -> str:
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=512,
+            max_tokens=2048,
             system=system_prompt,
             messages=messages,
         )
