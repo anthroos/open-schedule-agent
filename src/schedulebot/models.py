@@ -83,6 +83,9 @@ class Booking:
     slot: TimeSlot
     calendar_event_id: str | None = None
     meet_link: str | None = None
+    guest_email: str = ""
+    topic: str = ""
+    attendee_emails: list[str] = field(default_factory=list)
     notes: str = ""
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -95,6 +98,9 @@ class Conversation:
     channel: str
     state: ConversationState = ConversationState.GREETING
     guest_name: str = ""
+    guest_email: str = ""
+    guest_topic: str = ""
+    attendee_emails: list[str] = field(default_factory=list)
     selected_slot: TimeSlot | None = None
     messages: list[dict[str, str]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)

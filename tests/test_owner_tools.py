@@ -374,8 +374,10 @@ async def test_guest_flow_uses_tools_when_available(config, db):
 
     assert "book" in result.text.lower()
     assert llm._call_count == 1
-    # Verify tools were passed
-    assert any("confirm_booking" == t["name"] for t in llm.calls[0]["tools"])
+    # Verify both guest tools were passed
+    tool_names = {t["name"] for t in llm.calls[0]["tools"]}
+    assert "collect_guest_info" in tool_names
+    assert "confirm_booking" in tool_names
 
 
 @pytest.mark.asyncio
@@ -440,6 +442,16 @@ def db_with_slots(db):
 @pytest.mark.asyncio
 async def test_guest_booking_via_tool(config, db_with_slots):
     """Guest picks a slot → LLM calls confirm_booking → booking created."""
+    from schedulebot.models import Conversation, ConversationState
+
+    # Pre-populate guest info (collect_guest_info already called)
+    conv = Conversation(
+        sender_id="guest-100", channel="test",
+        guest_name="TestGuest", guest_email="guest@test.com",
+        state=ConversationState.COLLECTING_INFO,
+    )
+    db_with_slots.save_conversation(conv)
+
     llm = MockToolLLM(turns=[
         # Turn 1: LLM calls confirm_booking
         MockToolResponse(
@@ -490,6 +502,15 @@ async def test_guest_conversation_no_tools(config, db_with_slots):
 @pytest.mark.asyncio
 async def test_guest_invalid_slot_number(config, db_with_slots):
     """Guest picks invalid slot number → error returned, no booking."""
+    from schedulebot.models import Conversation, ConversationState
+
+    conv = Conversation(
+        sender_id="guest-102", channel="test",
+        guest_name="TestGuest", guest_email="guest@test.com",
+        state=ConversationState.COLLECTING_INFO,
+    )
+    db_with_slots.save_conversation(conv)
+
     llm = MockToolLLM(turns=[
         MockToolResponse(
             text="",
@@ -530,4 +551,4 @@ async def test_guest_tools_passed_to_llm(config, db_with_slots):
     assert len(llm.calls) == 1
     tools = llm.calls[0]["tools"]
     tool_names = {t["name"] for t in tools}
-    assert "confirm_booking" in tool_names
+    assert tool_names == {"collect_guest_info", "confirm_booking"}

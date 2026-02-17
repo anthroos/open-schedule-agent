@@ -2,14 +2,48 @@
 
 GUEST_TOOLS = [
     {
+        "name": "collect_guest_info",
+        "description": (
+            "Save the guest's contact info and meeting topic. "
+            "Call this as soon as you know the guest's name and email. "
+            "You MUST call this before confirm_booking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Guest's name.",
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Guest's email for the calendar invite.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "What the meeting is about (short summary).",
+                },
+            },
+            "required": ["name", "email"],
+        },
+    },
+    {
         "name": "confirm_booking",
-        "description": "Confirm and book a meeting slot for the guest. Call this when the guest has chosen a specific slot. Use the 1-based slot number from the AVAILABLE SLOTS list in the system prompt.",
+        "description": (
+            "Confirm and book a meeting slot. Call this ONLY after collect_guest_info has been called. "
+            "Use the 1-based slot number from the AVAILABLE SLOTS list."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "slot_number": {
                     "type": "integer",
                     "description": "The 1-based slot number from the AVAILABLE SLOTS list.",
+                },
+                "attendee_emails": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Additional attendee emails (max 2). Optional.",
                 },
             },
             "required": ["slot_number"],

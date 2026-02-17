@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     state TEXT NOT NULL DEFAULT 'greeting',
     mode TEXT NOT NULL DEFAULT 'guest',
     guest_name TEXT DEFAULT '',
+    guest_email TEXT DEFAULT '',
+    guest_topic TEXT DEFAULT '',
+    attendee_emails TEXT DEFAULT '[]',
     selected_slot_start TEXT,
     selected_slot_end TEXT,
     messages TEXT DEFAULT '[]',
@@ -28,6 +31,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     guest_name TEXT NOT NULL,
     guest_channel TEXT NOT NULL,
     guest_sender_id TEXT NOT NULL,
+    guest_email TEXT DEFAULT '',
+    topic TEXT DEFAULT '',
+    attendee_emails TEXT DEFAULT '[]',
     slot_start TEXT NOT NULL,
     slot_end TEXT NOT NULL,
     calendar_event_id TEXT,
@@ -47,6 +53,18 @@ CREATE TABLE IF NOT EXISTS availability_rules (
 );
 """
 
+MIGRATIONS = [
+    # Migration 1: Add guest_email, guest_topic, attendee_emails to conversations and bookings
+    [
+        "ALTER TABLE conversations ADD COLUMN guest_email TEXT DEFAULT ''",
+        "ALTER TABLE conversations ADD COLUMN guest_topic TEXT DEFAULT ''",
+        "ALTER TABLE conversations ADD COLUMN attendee_emails TEXT DEFAULT '[]'",
+        "ALTER TABLE bookings ADD COLUMN guest_email TEXT DEFAULT ''",
+        "ALTER TABLE bookings ADD COLUMN topic TEXT DEFAULT ''",
+        "ALTER TABLE bookings ADD COLUMN attendee_emails TEXT DEFAULT '[]'",
+    ],
+]
+
 
 class Database:
     def __init__(self, db_path: str | Path = "schedulebot.db"):
@@ -57,11 +75,22 @@ class Database:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(DB_SCHEMA)
+        self._run_migrations()
 
     def close(self) -> None:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    def _run_migrations(self) -> None:
+        """Run ALTER TABLE migrations for existing databases."""
+        for migration_stmts in MIGRATIONS:
+            for stmt in migration_stmts:
+                try:
+                    self._conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+        self._conn.commit()
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -88,6 +117,9 @@ class Database:
             channel=row["channel"],
             state=ConversationState(row["state"]),
             guest_name=row["guest_name"],
+            guest_email=row["guest_email"] or "",
+            guest_topic=row["guest_topic"] or "",
+            attendee_emails=json.loads(row["attendee_emails"] or "[]"),
             selected_slot=selected_slot,
             messages=json.loads(row["messages"]),
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -99,15 +131,19 @@ class Database:
         slot_end = conv.selected_slot.end.isoformat() if conv.selected_slot else None
         self.conn.execute(
             """INSERT OR REPLACE INTO conversations
-            (sender_id, channel, state, mode, guest_name, selected_slot_start, selected_slot_end,
+            (sender_id, channel, state, mode, guest_name, guest_email, guest_topic,
+             attendee_emails, selected_slot_start, selected_slot_end,
              messages, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 conv.sender_id,
                 conv.channel,
                 conv.state.value,
                 getattr(conv, '_mode', 'guest'),
                 conv.guest_name,
+                conv.guest_email,
+                conv.guest_topic,
+                json.dumps(conv.attendee_emails),
                 slot_start,
                 slot_end,
                 json.dumps(conv.messages),
@@ -126,14 +162,18 @@ class Database:
     def save_booking(self, booking: Booking) -> None:
         self.conn.execute(
             """INSERT INTO bookings
-            (id, guest_name, guest_channel, guest_sender_id, slot_start, slot_end,
+            (id, guest_name, guest_channel, guest_sender_id, guest_email, topic,
+             attendee_emails, slot_start, slot_end,
              calendar_event_id, meet_link, notes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 booking.id,
                 booking.guest_name,
                 booking.guest_channel,
                 booking.guest_sender_id,
+                booking.guest_email,
+                booking.topic,
+                json.dumps(booking.attendee_emails),
                 booking.slot.start.isoformat(),
                 booking.slot.end.isoformat(),
                 booking.calendar_event_id,
@@ -154,6 +194,9 @@ class Database:
                 guest_name=row["guest_name"],
                 guest_channel=row["guest_channel"],
                 guest_sender_id=row["guest_sender_id"],
+                guest_email=row["guest_email"] or "",
+                topic=row["topic"] or "",
+                attendee_emails=json.loads(row["attendee_emails"] or "[]"),
                 slot=TimeSlot(
                     start=datetime.fromisoformat(row["slot_start"]),
                     end=datetime.fromisoformat(row["slot_end"]),

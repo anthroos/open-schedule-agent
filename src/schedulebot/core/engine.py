@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from datetime import datetime
 
@@ -30,6 +31,24 @@ from ..models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --- Input validation constants ---
+MAX_MESSAGE_LENGTH = 300
+RATE_LIMIT_MESSAGES = 8
+RATE_LIMIT_WINDOW = 60  # seconds
+MAX_ATTENDEE_EMAILS = 2
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now\s+(a|an)\s+", re.IGNORECASE),
+    re.compile(r"system\s*:\s*", re.IGNORECASE),
+    re.compile(r"<\s*/?system\s*>", re.IGNORECASE),
+    re.compile(r"\[INST\]", re.IGNORECASE),
+    re.compile(r"<<\s*SYS\s*>>", re.IGNORECASE),
+]
+
+# In-memory rate limiter: sender_id -> list of timestamps
+_rate_limiter: dict[str, list[float]] = {}
 
 
 class SchedulingEngine:
@@ -61,7 +80,49 @@ class SchedulingEngine:
         """Process an incoming message. Routes to owner or guest flow."""
         if self._is_owner(msg.channel, msg.sender_id):
             return await self._handle_owner_message(msg)
+
+        # Guest input validation (zero-token cost)
+        rejection = self._validate_guest_input(msg)
+        if rejection:
+            return OutgoingMessage(text=rejection)
+
         return await self._handle_guest_message(msg)
+
+    # --- Input validation ---
+
+    def _validate_guest_input(self, msg: IncomingMessage) -> str | None:
+        """Pre-LLM validation for guest messages. Returns rejection text or None."""
+        text = msg.text.strip()
+
+        # Skip validation for commands
+        if text.startswith("/"):
+            return None
+
+        # Message length
+        if len(text) > MAX_MESSAGE_LENGTH:
+            return f"Please keep your message under {MAX_MESSAGE_LENGTH} characters."
+
+        # Rate limit
+        now = time.time()
+        history = _rate_limiter.get(msg.sender_id, [])
+        history = [t for t in history if now - t < RATE_LIMIT_WINDOW]
+        if len(history) >= RATE_LIMIT_MESSAGES:
+            return "You're sending messages too fast. Please wait a minute."
+        history.append(now)
+        _rate_limiter[msg.sender_id] = history
+
+        # Prompt injection
+        for pattern in INJECTION_PATTERNS:
+            if pattern.search(text):
+                logger.warning(f"Injection attempt from {msg.sender_id}: {text[:50]}")
+                return "I can only help with scheduling meetings. How can I help you book a time?"
+
+        return None
+
+    @staticmethod
+    def _validate_email(email: str) -> bool:
+        """Validate email format."""
+        return bool(EMAIL_RE.match(email))
 
     # ──────────────────────────────────────────────
     # OWNER MODE: schedule management
@@ -349,12 +410,14 @@ class SchedulingEngine:
             slots=slots,
             conversation_state=conv.state,
             guest_name=conv.guest_name,
+            guest_email=conv.guest_email,
+            guest_topic=conv.guest_topic,
         )
 
         api_messages = self._build_api_messages(conv.messages)
 
-        # Tool-use loop: max 3 iterations
-        for _ in range(3):
+        # Tool-use loop: max 5 iterations (collect_guest_info + confirm_booking + final)
+        for _ in range(5):
             try:
                 result = await self.llm.chat_with_tools(
                     system_prompt, api_messages, GUEST_TOOLS
@@ -366,65 +429,117 @@ class SchedulingEngine:
                 return OutgoingMessage(text=response)
 
             if not result.tool_calls:
-                # No tools — just conversational text
                 conv.add_message("assistant", result.text)
                 return OutgoingMessage(text=result.text)
 
-            # Process tool calls
+            # Build assistant content for API history
+            assistant_content = []
+            if result.text:
+                assistant_content.append({"type": "text", "text": result.text})
             for tc in result.tool_calls:
-                if tc.name == "confirm_booking":
-                    slot_idx = tc.input.get("slot_number", 0) - 1
-                    booking = None
-                    if 0 <= slot_idx < len(slots):
-                        conv.selected_slot = slots[slot_idx]
-                        conv.state = ConversationState.CONFIRMATION
-                        booking = await self._create_booking(conv)
-                        tool_output = ""
-                        if booking:
-                            confirmation = self._format_confirmation(booking)
-                            conv.state = ConversationState.BOOKED
-                            tool_output = f"Booking confirmed: {confirmation}"
-                        else:
-                            tool_output = "Failed to create booking. Calendar may be unavailable."
-                    else:
-                        tool_output = f"Invalid slot number {slot_idx + 1}. Valid range: 1-{len(slots)}"
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                })
+            api_messages.append({"role": "assistant", "content": assistant_content})
 
-                    logger.info(f"Guest tool confirm_booking(slot={slot_idx + 1}) → {tool_output[:80]}")
+            # Execute each tool and collect results
+            tool_result_content = []
+            booking = None
 
-                    # Send tool result back to LLM for final message
-                    assistant_content = []
-                    if result.text:
-                        assistant_content.append({"type": "text", "text": result.text})
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.input,
-                    })
-                    api_messages.append({"role": "assistant", "content": assistant_content})
-                    api_messages.append({"role": "user", "content": [
-                        {"type": "tool_result", "tool_use_id": tc.id, "content": tool_output}
-                    ]})
+            for tc in result.tool_calls:
+                tool_output = self._execute_guest_tool(tc.name, tc.input, conv, slots)
 
-                    # If booking succeeded, get final text from LLM
+                # Check if a booking was created by confirm_booking
+                if tc.name == "confirm_booking" and conv.state == ConversationState.CONFIRMATION:
+                    booking = await self._create_booking(conv)
                     if booking:
-                        try:
-                            final = await self.llm.chat_with_tools(
-                                system_prompt, api_messages, GUEST_TOOLS
-                            )
-                            final_text = final.text or confirmation
-                        except Exception:
-                            final_text = confirmation
-                        conv.add_message("assistant", final_text)
-                        return OutgoingMessage(
-                            text=final_text,
-                            metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
-                        )
+                        confirmation = self._format_confirmation(booking)
+                        conv.state = ConversationState.BOOKED
+                        tool_output = f"Booking confirmed: {confirmation}"
+                    else:
+                        tool_output = "Failed to create booking. Calendar may be unavailable."
+
+                tool_result_content.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": tool_output,
+                })
+                logger.info(f"Guest tool {tc.name}({tc.input}) -> {tool_output[:80]}")
+
+            api_messages.append({"role": "user", "content": tool_result_content})
+
+            # If booking succeeded, get final text and return
+            if booking:
+                try:
+                    final = await self.llm.chat_with_tools(
+                        system_prompt, api_messages, GUEST_TOOLS
+                    )
+                    final_text = final.text or self._format_confirmation(booking)
+                except Exception:
+                    final_text = self._format_confirmation(booking)
+                conv.add_message("assistant", final_text)
+                return OutgoingMessage(
+                    text=final_text,
+                    metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
+                )
+
+            # Continue loop (LLM may call another tool)
 
         # Fallback
         response = result.text if result.text else "Something went wrong. Please try again."
         conv.add_message("assistant", response)
         return OutgoingMessage(text=response)
+
+    def _execute_guest_tool(
+        self, name: str, params: dict, conv: Conversation, slots: list[TimeSlot]
+    ) -> str:
+        """Execute a guest tool call. Returns result text."""
+        if name == "collect_guest_info":
+            guest_name = params.get("name", "").strip()
+            guest_email = params.get("email", "").strip()
+            topic = params.get("topic", "").strip()
+
+            if not guest_name:
+                return "Error: name is required."
+            if not guest_email or not self._validate_email(guest_email):
+                return f"Error: valid email is required. Got: '{guest_email}'"
+
+            conv.guest_name = guest_name
+            conv.guest_email = guest_email
+            conv.guest_topic = topic
+            conv.state = ConversationState.COLLECTING_INFO
+            logger.info(f"Guest info collected: {guest_name} <{guest_email}> topic={topic}")
+            return f"Saved: {guest_name}, {guest_email}" + (f", topic: {topic}" if topic else "")
+
+        if name == "confirm_booking":
+            # Require guest info first
+            if not conv.guest_name or not conv.guest_email:
+                return "Error: must call collect_guest_info first (need name + email)."
+
+            slot_number = params.get("slot_number", 0)
+            slot_idx = slot_number - 1
+            attendee_emails = params.get("attendee_emails", [])
+
+            # Validate attendee emails
+            if len(attendee_emails) > MAX_ATTENDEE_EMAILS:
+                return f"Error: max {MAX_ATTENDEE_EMAILS} additional attendees allowed."
+            for email in attendee_emails:
+                if not self._validate_email(email):
+                    return f"Error: invalid attendee email: '{email}'"
+
+            if not (0 <= slot_idx < len(slots)):
+                return f"Error: invalid slot number {slot_number}. Valid range: 1-{len(slots)}."
+
+            conv.selected_slot = slots[slot_idx]
+            conv.attendee_emails = attendee_emails
+            conv.state = ConversationState.CONFIRMATION
+            # Actual booking created in the caller (_handle_guest_message_tools)
+            return "PENDING_BOOKING"
+
+        return f"Unknown tool: {name}"
 
     async def _handle_guest_message_text(
         self, conv: Conversation, slots: list[TimeSlot]
@@ -495,12 +610,32 @@ class SchedulingEngine:
         if not conv.selected_slot:
             return None
 
+        guest_name = conv.guest_name or "Guest"
+        topic = conv.guest_topic or ""
+        summary = f"Meeting with {guest_name}"
+        if topic:
+            summary += f": {topic}"
+        description = f"Scheduled via schedulebot.\nChannel: {conv.channel}"
+        if conv.guest_email:
+            description += f"\nGuest: {guest_name} <{conv.guest_email}>"
+        if topic:
+            description += f"\nTopic: {topic}"
+
+        # Collect all attendee emails (guest + extras)
+        all_attendee_emails = []
+        if conv.guest_email:
+            all_attendee_emails.append(conv.guest_email)
+        all_attendee_emails.extend(conv.attendee_emails)
+
         if self.config.dry_run:
             booking = Booking(
                 id=str(uuid.uuid4())[:8],
-                guest_name=conv.guest_name or "Guest",
+                guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,
+                guest_email=conv.guest_email,
+                topic=topic,
+                attendee_emails=conv.attendee_emails,
                 slot=conv.selected_slot,
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
@@ -510,18 +645,22 @@ class SchedulingEngine:
 
         try:
             event = await self.calendar.create_event(
-                summary=f"Meeting with {conv.guest_name or 'Guest'}",
+                summary=summary,
                 start=conv.selected_slot.start,
                 end=conv.selected_slot.end,
-                description=f"Scheduled via schedulebot. Channel: {conv.channel}",
+                description=description,
+                attendee_emails=all_attendee_emails or None,
                 create_meet_link=self.config.calendar.create_meet_link,
             )
 
             booking = Booking(
                 id=str(uuid.uuid4())[:8],
-                guest_name=conv.guest_name or "Guest",
+                guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,
+                guest_email=conv.guest_email,
+                topic=topic,
+                attendee_emails=conv.attendee_emails,
                 slot=conv.selected_slot,
                 calendar_event_id=event.get("event_id"),
                 meet_link=event.get("meet_link"),

@@ -61,6 +61,7 @@ class GoogleCalendarProvider(CalendarProvider):
         end: datetime,
         description: str = "",
         attendee_email: str | None = None,
+        attendee_emails: list[str] | None = None,
         create_meet_link: bool = False,
     ) -> dict:
         """Create a Google Calendar event with optional Meet link."""
@@ -77,8 +78,13 @@ class GoogleCalendarProvider(CalendarProvider):
             },
         }
 
+        all_emails: list[str] = []
         if attendee_email:
-            event_body["attendees"] = [{"email": attendee_email}]
+            all_emails.append(attendee_email)
+        if attendee_emails:
+            all_emails.extend(attendee_emails)
+        if all_emails:
+            event_body["attendees"] = [{"email": e} for e in dict.fromkeys(all_emails)]
 
         conference_version = 0
         if create_meet_link:
