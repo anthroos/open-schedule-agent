@@ -88,7 +88,9 @@ class TelegramAdapter(ChannelAdapter):
                 response = await self.on_message(msg)
                 # Strip [BOOK:N] tags from response before sending
                 import re
-                clean_text = re.sub(r"\s*\[BOOK:\S+\]", "", response.text)
+                clean_text = re.sub(r"\s*\[BOOK:\S+\]", "", response.text).strip()
+                if not clean_text:
+                    clean_text = "Done! Check your email for the calendar invite."
                 await update.message.reply_text(clean_text)
             except Exception as e:
                 logger.error(f"Error handling message: {e}", exc_info=True)

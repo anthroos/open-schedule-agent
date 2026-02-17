@@ -473,13 +473,14 @@ class SchedulingEngine:
 
             # If booking succeeded, get final text and return
             if booking:
+                confirmation = self._format_confirmation(booking)
                 try:
                     final = await self.llm.chat_with_tools(
                         system_prompt, api_messages, GUEST_TOOLS
                     )
-                    final_text = final.text or self._format_confirmation(booking)
+                    final_text = (final.text or "").strip() or confirmation
                 except Exception:
-                    final_text = self._format_confirmation(booking)
+                    final_text = confirmation
                 conv.add_message("assistant", final_text)
                 return OutgoingMessage(
                     text=final_text,
