@@ -1,4 +1,4 @@
-"""Availability engine: combines YAML rules with calendar busy times."""
+"""Availability engine: combines DB rules with calendar busy times."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from ..calendar.base import CalendarProvider
 from ..config import AvailabilityConfig
-from ..models import TimeSlot
+from ..database import Database
+from ..models import AvailabilityRule, TimeSlot
 
 DAYS_OF_WEEK = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
@@ -21,11 +22,12 @@ def parse_time_range(time_range: str) -> tuple[tuple[int, int], tuple[int, int]]
 
 
 class AvailabilityEngine:
-    """Computes available time slots by subtracting calendar busy times from YAML rules."""
+    """Computes available time slots by subtracting calendar busy times from DB rules."""
 
-    def __init__(self, config: AvailabilityConfig, calendar: CalendarProvider):
+    def __init__(self, config: AvailabilityConfig, calendar: CalendarProvider, db: Database):
         self.config = config
         self.calendar = calendar
+        self.db = db
         self.tz = ZoneInfo(config.timezone)
 
     async def get_available_slots(self, from_date: datetime | None = None) -> list[TimeSlot]:
@@ -37,8 +39,13 @@ class AvailabilityEngine:
         min_start = now + timedelta(hours=self.config.min_notice_hours)
         end_date = now + timedelta(days=self.config.max_days_ahead)
 
-        # Generate raw slots from working hours rules
-        raw_slots = self._generate_rule_slots(min_start, end_date)
+        # Get rules from database
+        rules = self.db.get_availability_rules()
+        if not rules:
+            return []
+
+        # Generate raw slots from rules
+        raw_slots = self._generate_rule_slots(rules, min_start, end_date)
 
         if not raw_slots:
             return []
@@ -51,19 +58,43 @@ class AvailabilityEngine:
 
         return available
 
-    def _generate_rule_slots(self, start: datetime, end: datetime) -> list[TimeSlot]:
-        """Generate time slots from YAML working_hours rules."""
+    def _generate_rule_slots(
+        self, rules: list[AvailabilityRule], start: datetime, end: datetime
+    ) -> list[TimeSlot]:
+        """Generate time slots from DB availability rules."""
         slots = []
         duration = timedelta(minutes=self.config.meeting_duration_minutes)
         buffer = timedelta(minutes=self.config.buffer_minutes)
 
+        # Separate recurring vs specific-date rules
+        recurring = {}
+        specific = {}
+        blocked_recurring = {}
+        blocked_specific = {}
+
+        for rule in rules:
+            if rule.is_blocked:
+                if rule.day_of_week:
+                    blocked_recurring.setdefault(rule.day_of_week, []).append(rule)
+                elif rule.specific_date:
+                    blocked_specific.setdefault(rule.specific_date, []).append(rule)
+            else:
+                if rule.day_of_week:
+                    recurring.setdefault(rule.day_of_week, []).append(rule)
+                elif rule.specific_date:
+                    specific.setdefault(rule.specific_date, []).append(rule)
+
         current_day = start.replace(hour=0, minute=0, second=0, microsecond=0)
         while current_day < end:
             day_name = DAYS_OF_WEEK[current_day.weekday()]
-            day_ranges = self.config.working_hours.get(day_name, [])
+            date_str = current_day.strftime("%Y-%m-%d")
 
-            for time_range in day_ranges:
-                (sh, sm), (eh, em) = parse_time_range(time_range)
+            # Collect time ranges for this day (specific date overrides recurring)
+            day_rules = specific.get(date_str, recurring.get(day_name, []))
+            day_blocked = blocked_specific.get(date_str, []) + blocked_recurring.get(day_name, [])
+
+            for rule in day_rules:
+                (sh, sm), (eh, em) = parse_time_range(f"{rule.start_time}-{rule.end_time}")
                 range_start = current_day.replace(hour=sh, minute=sm)
                 range_end = current_day.replace(hour=eh, minute=em)
 
@@ -71,7 +102,20 @@ class AvailabilityEngine:
                 slot_start = range_start
                 while slot_start + duration <= range_end:
                     slot_end = slot_start + duration
-                    if slot_start >= start:  # skip past slots
+
+                    # Check not blocked
+                    is_blocked = False
+                    for blocked in day_blocked:
+                        (bsh, bsm), (beh, bem) = parse_time_range(
+                            f"{blocked.start_time}-{blocked.end_time}"
+                        )
+                        block_start = current_day.replace(hour=bsh, minute=bsm)
+                        block_end = current_day.replace(hour=beh, minute=bem)
+                        if slot_start < block_end and slot_end > block_start:
+                            is_blocked = True
+                            break
+
+                    if not is_blocked and slot_start >= start:
                         slots.append(TimeSlot(start=slot_start, end=slot_end))
                     slot_start = slot_end + buffer
 
@@ -90,7 +134,6 @@ class AvailabilityEngine:
         for slot in slots:
             is_free = True
             for b in busy:
-                # Check overlap: slot overlaps busy if slot.start < busy.end AND slot.end > busy.start
                 if slot.start < b.end and slot.end > b.start:
                     is_free = False
                     break

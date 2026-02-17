@@ -1,8 +1,9 @@
-"""Core scheduling engine — channel-agnostic."""
+"""Core scheduling engine — channel-agnostic, with owner/guest dual mode."""
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime
 
@@ -11,8 +12,9 @@ from ..config import Config
 from ..core.availability import AvailabilityEngine
 from ..database import Database
 from ..llm.base import LLMProvider
-from ..llm.prompts import build_system_prompt
+from ..llm.prompts import build_owner_prompt, build_system_prompt
 from ..models import (
+    AvailabilityRule,
     Booking,
     Conversation,
     ConversationState,
@@ -25,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 
 class SchedulingEngine:
-    """Main engine that processes messages and manages the scheduling flow."""
+    """Main engine that processes messages and manages the scheduling flow.
+
+    Routes messages to owner mode (schedule management) or guest mode (booking)
+    based on sender_id matching config.owner.owner_ids.
+    """
 
     def __init__(
         self,
@@ -38,30 +44,157 @@ class SchedulingEngine:
         self.calendar = calendar
         self.llm = llm
         self.db = db
-        self.availability = AvailabilityEngine(config.availability, calendar)
+        self.availability = AvailabilityEngine(config.availability, calendar, db)
+
+    def _is_owner(self, channel: str, sender_id: str) -> bool:
+        """Check if the sender is the owner."""
+        owner_id = self.config.owner.owner_ids.get(channel, "")
+        return owner_id != "" and owner_id == sender_id
 
     async def handle_message(self, msg: IncomingMessage) -> OutgoingMessage:
-        """Process an incoming message and return a response.
+        """Process an incoming message. Routes to owner or guest flow."""
+        if self._is_owner(msg.channel, msg.sender_id):
+            return await self._handle_owner_message(msg)
+        return await self._handle_guest_message(msg)
 
-        This is the single entry point that all channel adapters call.
-        """
+    # ──────────────────────────────────────────────
+    # OWNER MODE: schedule management
+    # ──────────────────────────────────────────────
+
+    async def _handle_owner_message(self, msg: IncomingMessage) -> OutgoingMessage:
+        """Owner is managing their schedule."""
+        # Quick commands without LLM
+        text_lower = msg.text.strip().lower()
+        if text_lower in ("/schedule", "/rules", "/show"):
+            summary = self.db.format_availability_summary()
+            return OutgoingMessage(text=summary)
+
+        if text_lower == "/clear":
+            count = self.db.clear_availability_rules()
+            return OutgoingMessage(text=f"Cleared {count} availability rules.")
+
+        # Get or create conversation
         conv = self.db.get_conversation(msg.sender_id)
         if not conv:
-            conv = Conversation(
-                sender_id=msg.sender_id,
-                channel=msg.channel,
+            conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
+        conv._mode = "owner"
+
+        if text_lower in ("/start", "/cancel"):
+            self.db.delete_conversation(msg.sender_id)
+            conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
+            conv._mode = "owner"
+
+        conv.add_message("user", msg.text)
+
+        # Build owner prompt
+        rules_summary = self.db.format_availability_summary()
+        system_prompt = build_owner_prompt(
+            owner_name=self.config.owner.name,
+            current_rules_summary=rules_summary,
+            booking_links=self.config.booking_links.links,
+        )
+
+        # Call LLM
+        response_text = await self.llm.chat(system_prompt, conv.messages)
+
+        # Parse and execute owner actions
+        response_text = self._execute_owner_actions(response_text)
+
+        conv.add_message("assistant", response_text)
+        self.db.save_conversation(conv)
+
+        # Strip action tags from response
+        clean_text = re.sub(r"\[(?:ADD_RULE|BLOCK_RULE|CLEAR_RULES|CLEAR_ALL|SHOW_RULES)[^\]]*\]", "", response_text)
+        clean_text = clean_text.strip()
+
+        return OutgoingMessage(text=clean_text)
+
+    def _execute_owner_actions(self, response: str) -> str:
+        """Parse and execute action tags from LLM response."""
+        actions_taken = []
+
+        # ADD_RULE:day=monday,start=10:00,end=18:00
+        # ADD_RULE:date=2026-02-20,start=10:00,end=14:00
+        for match in re.finditer(r"\[ADD_RULE:([^\]]+)\]", response):
+            params = self._parse_params(match.group(1))
+            rule = AvailabilityRule(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+                start_time=params.get("start", ""),
+                end_time=params.get("end", ""),
+                is_blocked=False,
             )
+            if rule.start_time and rule.end_time:
+                rule_id = self.db.add_availability_rule(rule)
+                target = rule.day_of_week or rule.specific_date
+                actions_taken.append(f"Added: {target} {rule.start_time}-{rule.end_time}")
+                logger.info(f"Added availability rule #{rule_id}: {target} {rule.start_time}-{rule.end_time}")
+
+        # BLOCK_RULE:day=tuesday,start=14:30,end=23:59
+        for match in re.finditer(r"\[BLOCK_RULE:([^\]]+)\]", response):
+            params = self._parse_params(match.group(1))
+            rule = AvailabilityRule(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+                start_time=params.get("start", ""),
+                end_time=params.get("end", ""),
+                is_blocked=True,
+            )
+            if rule.start_time and rule.end_time:
+                rule_id = self.db.add_availability_rule(rule)
+                target = rule.day_of_week or rule.specific_date
+                actions_taken.append(f"Blocked: {target} {rule.start_time}-{rule.end_time}")
+                logger.info(f"Added block rule #{rule_id}: {target} {rule.start_time}-{rule.end_time}")
+
+        # CLEAR_RULES:day=monday  or  CLEAR_RULES:date=2026-02-20
+        for match in re.finditer(r"\[CLEAR_RULES:([^\]]+)\]", response):
+            params = self._parse_params(match.group(1))
+            count = self.db.clear_availability_rules(
+                day_of_week=params.get("day", ""),
+                specific_date=params.get("date", ""),
+            )
+            target = params.get("day", "") or params.get("date", "")
+            actions_taken.append(f"Cleared {count} rules for {target}")
+
+        # CLEAR_ALL
+        if "[CLEAR_ALL]" in response:
+            count = self.db.clear_availability_rules()
+            actions_taken.append(f"Cleared all {count} rules")
+
+        # SHOW_RULES
+        if "[SHOW_RULES]" in response:
+            summary = self.db.format_availability_summary()
+            response = response.replace("[SHOW_RULES]", f"\n{summary}")
+
+        return response
+
+    def _parse_params(self, params_str: str) -> dict[str, str]:
+        """Parse 'key=value,key=value' into a dict."""
+        result = {}
+        for part in params_str.split(","):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                result[k.strip()] = v.strip()
+        return result
+
+    # ──────────────────────────────────────────────
+    # GUEST MODE: booking
+    # ──────────────────────────────────────────────
+
+    async def _handle_guest_message(self, msg: IncomingMessage) -> OutgoingMessage:
+        """Guest is trying to book a meeting."""
+        conv = self.db.get_conversation(msg.sender_id)
+        if not conv:
+            conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
 
         # Handle /cancel command
         if msg.text.strip().lower() in ("/cancel", "/start"):
             if msg.text.strip().lower() == "/cancel":
                 self.db.delete_conversation(msg.sender_id)
                 return OutgoingMessage(text="Scheduling cancelled. Send a message anytime to start over.")
-            # /start — reset and begin fresh
             self.db.delete_conversation(msg.sender_id)
             conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
 
-        # Add user message to history
         conv.add_message("user", msg.text)
 
         # Get available slots
@@ -79,7 +212,7 @@ class SchedulingEngine:
         response_text = await self.llm.chat(system_prompt, conv.messages)
 
         # Parse LLM response for structured actions
-        action = self._parse_action(response_text, slots, conv)
+        action = self._parse_booking_action(response_text, slots, conv)
 
         if action == "book" and conv.selected_slot:
             booking = await self._create_booking(conv)
@@ -97,18 +230,14 @@ class SchedulingEngine:
         conv.add_message("assistant", response_text)
         self.db.save_conversation(conv)
 
-        return OutgoingMessage(text=response_text)
+        # Strip action tags
+        clean_text = re.sub(r"\s*\[BOOK:\S+\]", "", response_text)
+        return OutgoingMessage(text=clean_text)
 
-    def _parse_action(
+    def _parse_booking_action(
         self, response: str, slots: list[TimeSlot], conv: Conversation
     ) -> str | None:
-        """Check if the LLM response contains a booking action.
-
-        Convention: LLM includes [BOOK:N] where N is 1-based slot index,
-        or [BOOK:YYYY-MM-DDTHH:MM] for explicit time.
-        """
-        import re
-
+        """Check if the LLM response contains a booking action."""
         match = re.search(r"\[BOOK:(\d+)\]", response)
         if match:
             idx = int(match.group(1)) - 1
@@ -129,7 +258,6 @@ class SchedulingEngine:
             except ValueError:
                 pass
 
-        # Update state based on conversation flow
         if conv.state == ConversationState.GREETING:
             conv.state = ConversationState.COLLECTING_INFO
 
@@ -139,6 +267,19 @@ class SchedulingEngine:
         """Create a calendar event and booking record."""
         if not conv.selected_slot:
             return None
+
+        if self.config.dry_run:
+            booking = Booking(
+                id=str(uuid.uuid4())[:8],
+                guest_name=conv.guest_name or "Guest",
+                guest_channel=conv.channel,
+                guest_sender_id=conv.sender_id,
+                slot=conv.selected_slot,
+                calendar_event_id="dry-run",
+                meet_link="https://meet.google.com/dry-run",
+            )
+            self.db.save_booking(booking)
+            return booking
 
         try:
             event = await self.calendar.create_event(

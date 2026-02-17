@@ -1,4 +1,4 @@
-"""SQLite database for conversations and bookings."""
+"""SQLite database for conversations, bookings, and availability rules."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from .models import Booking, Conversation, ConversationState, TimeSlot
+from .models import AvailabilityRule, Booking, Conversation, ConversationState, TimeSlot
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     sender_id TEXT PRIMARY KEY,
     channel TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'greeting',
+    mode TEXT NOT NULL DEFAULT 'guest',
     guest_name TEXT DEFAULT '',
     selected_slot_start TEXT,
     selected_slot_end TEXT,
@@ -32,6 +33,16 @@ CREATE TABLE IF NOT EXISTS bookings (
     calendar_event_id TEXT,
     meet_link TEXT,
     notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS availability_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day_of_week TEXT DEFAULT '',
+    specific_date TEXT DEFAULT '',
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    is_blocked INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 """
@@ -57,6 +68,8 @@ class Database:
         if not self._conn:
             self.connect()
         return self._conn
+
+    # --- Conversations ---
 
     def get_conversation(self, sender_id: str) -> Conversation | None:
         row = self.conn.execute(
@@ -86,13 +99,14 @@ class Database:
         slot_end = conv.selected_slot.end.isoformat() if conv.selected_slot else None
         self.conn.execute(
             """INSERT OR REPLACE INTO conversations
-            (sender_id, channel, state, guest_name, selected_slot_start, selected_slot_end,
+            (sender_id, channel, state, mode, guest_name, selected_slot_start, selected_slot_end,
              messages, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 conv.sender_id,
                 conv.channel,
                 conv.state.value,
+                getattr(conv, '_mode', 'guest'),
                 conv.guest_name,
                 slot_start,
                 slot_end,
@@ -106,6 +120,8 @@ class Database:
     def delete_conversation(self, sender_id: str) -> None:
         self.conn.execute("DELETE FROM conversations WHERE sender_id = ?", (sender_id,))
         self.conn.commit()
+
+    # --- Bookings ---
 
     def save_booking(self, booking: Booking) -> None:
         self.conn.execute(
@@ -149,3 +165,102 @@ class Database:
             )
             for row in rows
         ]
+
+    # --- Availability Rules ---
+
+    def get_availability_rules(self) -> list[AvailabilityRule]:
+        rows = self.conn.execute(
+            "SELECT * FROM availability_rules ORDER BY day_of_week, specific_date, start_time"
+        ).fetchall()
+        return [
+            AvailabilityRule(
+                id=row["id"],
+                day_of_week=row["day_of_week"],
+                specific_date=row["specific_date"],
+                start_time=row["start_time"],
+                end_time=row["end_time"],
+                is_blocked=bool(row["is_blocked"]),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def add_availability_rule(self, rule: AvailabilityRule) -> int:
+        cursor = self.conn.execute(
+            """INSERT INTO availability_rules
+            (day_of_week, specific_date, start_time, end_time, is_blocked, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                rule.day_of_week,
+                rule.specific_date,
+                rule.start_time,
+                rule.end_time,
+                int(rule.is_blocked),
+                rule.created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def delete_availability_rule(self, rule_id: int) -> bool:
+        cursor = self.conn.execute(
+            "DELETE FROM availability_rules WHERE id = ?", (rule_id,)
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def clear_availability_rules(self, day_of_week: str = "", specific_date: str = "") -> int:
+        """Clear rules matching criteria. Empty string = don't filter by that field."""
+        conditions = []
+        params = []
+        if day_of_week:
+            conditions.append("day_of_week = ?")
+            params.append(day_of_week)
+        if specific_date:
+            conditions.append("specific_date = ?")
+            params.append(specific_date)
+        if not conditions:
+            cursor = self.conn.execute("DELETE FROM availability_rules")
+        else:
+            cursor = self.conn.execute(
+                f"DELETE FROM availability_rules WHERE {' AND '.join(conditions)}", params
+            )
+        self.conn.commit()
+        return cursor.rowcount
+
+    def format_availability_summary(self) -> str:
+        """Human-readable summary of current availability rules."""
+        rules = self.get_availability_rules()
+        if not rules:
+            return "No availability rules set. Tell me when you're available!"
+
+        recurring = {}
+        specific = {}
+        for r in rules:
+            if r.day_of_week:
+                recurring.setdefault(r.day_of_week, []).append(r)
+            elif r.specific_date:
+                specific.setdefault(r.specific_date, []).append(r)
+
+        lines = []
+        if recurring:
+            lines.append("Recurring schedule:")
+            day_order = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+            for day in day_order:
+                if day in recurring:
+                    slots = []
+                    for r in recurring[day]:
+                        prefix = "BLOCKED " if r.is_blocked else ""
+                        slots.append(f"{prefix}{r.start_time}-{r.end_time}")
+                    lines.append(f"  {day.capitalize()}: {', '.join(slots)}")
+
+        if specific:
+            lines.append("Specific dates:")
+            for date in sorted(specific.keys()):
+                slots = []
+                for r in specific[date]:
+                    prefix = "BLOCKED " if r.is_blocked else ""
+                    slots.append(f"{prefix}{r.start_time}-{r.end_time}")
+                lines.append(f"  {date}: {', '.join(slots)}")
+
+        return "\n".join(lines)

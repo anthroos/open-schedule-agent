@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Optional, List
 from zoneinfo import ZoneInfo
@@ -11,7 +10,8 @@ import pytest
 
 from schedulebot.config import AvailabilityConfig
 from schedulebot.core.availability import AvailabilityEngine, parse_time_range
-from schedulebot.models import TimeSlot
+from schedulebot.database import Database
+from schedulebot.models import AvailabilityRule, TimeSlot
 
 
 class MockCalendar:
@@ -43,10 +43,6 @@ def test_parse_time_range_half_hours():
 def config():
     return AvailabilityConfig(
         timezone="UTC",
-        working_hours={
-            "monday": ["09:00-12:00"],
-            "tuesday": ["10:00-13:00"],
-        },
         meeting_duration_minutes=30,
         buffer_minutes=15,
         min_notice_hours=0,
@@ -54,14 +50,26 @@ def config():
     )
 
 
-def test_generate_rule_slots(config):
-    calendar = MockCalendar()
-    engine = AvailabilityEngine(config, calendar)
+@pytest.fixture
+def db(tmp_path):
+    d = Database(tmp_path / "test.db")
+    d.connect()
+    # Add rules: Monday 09:00-12:00, Tuesday 10:00-13:00
+    d.add_availability_rule(AvailabilityRule(day_of_week="monday", start_time="09:00", end_time="12:00"))
+    d.add_availability_rule(AvailabilityRule(day_of_week="tuesday", start_time="10:00", end_time="13:00"))
+    yield d
+    d.close()
 
+
+def test_generate_rule_slots(config, db):
+    calendar = MockCalendar()
+    engine = AvailabilityEngine(config, calendar, db)
+
+    rules = db.get_availability_rules()
     # Monday Jan 6, 2025 — known Monday
     start = datetime(2025, 1, 6, 0, 0, tzinfo=ZoneInfo("UTC"))
     end = datetime(2025, 1, 7, 0, 0, tzinfo=ZoneInfo("UTC"))
-    slots = engine._generate_rule_slots(start, end)
+    slots = engine._generate_rule_slots(rules, start, end)
 
     # 09:00-12:00 with 30min duration + 15min buffer = 4 slots
     # 09:00-09:30, 09:45-10:15, 10:30-11:00, 11:15-11:45
@@ -72,9 +80,9 @@ def test_generate_rule_slots(config):
     assert slots[0].end.minute == 30
 
 
-def test_subtract_busy(config):
+def test_subtract_busy(config, db):
     calendar = MockCalendar()
-    engine = AvailabilityEngine(config, calendar)
+    engine = AvailabilityEngine(config, calendar, db)
 
     tz = ZoneInfo("UTC")
     slots = [
@@ -93,9 +101,9 @@ def test_subtract_busy(config):
 
 
 @pytest.mark.asyncio
-async def test_get_available_slots_empty_calendar(config):
+async def test_get_available_slots_empty_calendar(config, db):
     calendar = MockCalendar()
-    engine = AvailabilityEngine(config, calendar)
+    engine = AvailabilityEngine(config, calendar, db)
 
     # Start from a known Monday
     from_date = datetime(2025, 1, 6, 0, 0, tzinfo=ZoneInfo("UTC"))
@@ -105,7 +113,7 @@ async def test_get_available_slots_empty_calendar(config):
 
 
 @pytest.mark.asyncio
-async def test_get_available_slots_with_busy(config):
+async def test_get_available_slots_with_busy(config, db):
     tz = ZoneInfo("UTC")
     busy = [
         TimeSlot(
@@ -114,10 +122,42 @@ async def test_get_available_slots_with_busy(config):
         ),
     ]
     calendar = MockCalendar(busy=busy)
-    engine = AvailabilityEngine(config, calendar)
+    engine = AvailabilityEngine(config, calendar, db)
 
     from_date = datetime(2025, 1, 6, 0, 0, tzinfo=tz)
     slots = await engine.get_available_slots(from_date)
     # All Monday slots should be blocked (09:00-12:00 is entirely busy)
     monday_slots = [s for s in slots if s.start.date() == from_date.date()]
     assert len(monday_slots) == 0
+
+
+def test_db_availability_crud(tmp_path):
+    """Test DB operations for availability rules."""
+    d = Database(tmp_path / "crud.db")
+    d.connect()
+
+    # Add rules
+    id1 = d.add_availability_rule(AvailabilityRule(day_of_week="monday", start_time="09:00", end_time="17:00"))
+    id2 = d.add_availability_rule(AvailabilityRule(day_of_week="tuesday", start_time="10:00", end_time="14:00"))
+    id3 = d.add_availability_rule(AvailabilityRule(
+        specific_date="2025-01-15", start_time="10:00", end_time="12:00"
+    ))
+
+    rules = d.get_availability_rules()
+    assert len(rules) == 3
+
+    # Delete one
+    assert d.delete_availability_rule(id1) is True
+    assert len(d.get_availability_rules()) == 2
+
+    # Clear by day
+    d.add_availability_rule(AvailabilityRule(day_of_week="tuesday", start_time="15:00", end_time="17:00"))
+    cleared = d.clear_availability_rules(day_of_week="tuesday")
+    assert cleared == 2  # both tuesday rules
+    assert len(d.get_availability_rules()) == 1  # only the specific date rule
+
+    # Summary
+    summary = d.format_availability_summary()
+    assert "2025-01-15" in summary
+
+    d.close()

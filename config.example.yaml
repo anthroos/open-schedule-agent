@@ -1,17 +1,14 @@
 owner:
   name: "Your Name"
   email: "you@example.com"
+  owner_ids:
+    telegram: "${OWNER_TELEGRAM_ID}"
+    web: "owner"
 
 availability:
   timezone: "UTC"
-  working_hours:
-    monday: ["09:00-17:00"]
-    tuesday: ["09:00-17:00"]
-    wednesday: ["09:00-17:00"]
-    thursday: ["09:00-17:00"]
-    friday: ["09:00-17:00"]
-    # saturday: []  # uncomment to add weekend hours
-    # sunday: []
+  # No working_hours here — set them by talking to the bot!
+  # Or via API: POST /api/schedule/rules
   meeting_duration_minutes: 30
   buffer_minutes: 15
   min_notice_hours: 4
@@ -20,6 +17,8 @@ availability:
 calendar:
   provider: "google"
   create_meet_link: true
+  credentials_path: "credentials.json"
+  token_path: "token.json"
 
 llm:
   provider: "anthropic"  # anthropic | openai | ollama
@@ -33,6 +32,11 @@ channels:
   telegram:
     enabled: true
     bot_token: "${TELEGRAM_BOT_TOKEN}"
+  web:
+    enabled: false
+    host: "0.0.0.0"
+    port: 8080
+    api_key: "${SCHEDULEBOT_API_KEY}"
   slack:
     enabled: false
     bot_token: "${SLACK_BOT_TOKEN}"
@@ -40,10 +44,6 @@ channels:
   discord:
     enabled: false
     bot_token: "${DISCORD_BOT_TOKEN}"
-  web:
-    enabled: false
-    host: "0.0.0.0"
-    port: 8080
 
 notifications:
   channel: "telegram"

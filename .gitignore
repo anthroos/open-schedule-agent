@@ -8,3 +8,5 @@ token.json
 credentials.json
 *.db
 .pytest_cache/
+config.yaml
+deploy-railway.sh

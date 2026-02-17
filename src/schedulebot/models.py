@@ -19,6 +19,26 @@ class ConversationState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ConversationMode(str, Enum):
+    """Whether this is an owner managing schedule or a guest booking."""
+
+    OWNER = "owner"
+    GUEST = "guest"
+
+
+@dataclass
+class AvailabilityRule:
+    """A single availability rule stored in DB."""
+
+    id: int | None = None
+    day_of_week: str = ""  # "monday", "tuesday", etc. or "" for specific date
+    specific_date: str = ""  # "2026-02-20" or "" for recurring
+    start_time: str = ""  # "10:00"
+    end_time: str = ""  # "18:00"
+    is_blocked: bool = False  # True = explicitly unavailable
+    created_at: datetime = field(default_factory=datetime.now)
+
+
 @dataclass
 class IncomingMessage:
     """Channel-agnostic incoming message."""

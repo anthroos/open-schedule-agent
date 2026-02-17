@@ -1,0 +1,12 @@
+.git
+.env
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+schedulebot.db
+docs/
+tests/
+scripts/
+.venv/
+*.egg-info

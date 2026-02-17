@@ -15,12 +15,12 @@ from dotenv import load_dotenv
 class OwnerConfig:
     name: str = "Owner"
     email: str = ""
+    owner_ids: dict[str, str] = field(default_factory=dict)  # channel -> sender_id
 
 
 @dataclass
 class AvailabilityConfig:
     timezone: str = "UTC"
-    working_hours: dict[str, list[str]] = field(default_factory=dict)
     meeting_duration_minutes: int = 30
     buffer_minutes: int = 15
     min_notice_hours: int = 4
@@ -58,6 +58,28 @@ class NotificationsConfig:
 
 
 @dataclass
+class BookingLinksConfig:
+    links: dict[str, str] = field(default_factory=dict)  # channel -> URL
+
+
+@dataclass
+class ServiceConfig:
+    name: str = ""
+    slug: str = ""
+    duration_minutes: int = 30
+    price: float = 0
+    currency: str = "USD"
+    description: str = ""
+
+
+@dataclass
+class MCPConfig:
+    enabled: bool = False
+    transport: str = "streamable-http"  # stdio | streamable-http
+    path: str = "/mcp"
+
+
+@dataclass
 class Config:
     owner: OwnerConfig = field(default_factory=OwnerConfig)
     availability: AvailabilityConfig = field(default_factory=AvailabilityConfig)
@@ -65,6 +87,9 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     channels: dict[str, ChannelConfig] = field(default_factory=dict)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    booking_links: BookingLinksConfig = field(default_factory=BookingLinksConfig)
+    services: list[ServiceConfig] = field(default_factory=list)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
     dry_run: bool = False
 
 
@@ -93,12 +118,19 @@ def _resolve_dict(d: dict) -> dict:
 
 def load_config(config_path: str | Path, env_path: str | Path | None = None) -> Config:
     """Load config from YAML file with env var resolution."""
+    config_path = Path(config_path).resolve()
+    config_dir = config_path.parent
+
     if env_path:
         load_dotenv(env_path)
     else:
-        load_dotenv()
+        # Look for .env next to config file first, then CWD
+        env_beside_config = config_dir / ".env"
+        if env_beside_config.exists():
+            load_dotenv(env_beside_config)
+        else:
+            load_dotenv()
 
-    config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
@@ -111,12 +143,12 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     owner = OwnerConfig(
         name=owner_data.get("name", "Owner"),
         email=owner_data.get("email", ""),
+        owner_ids=owner_data.get("owner_ids", {}),
     )
 
     avail_data = raw.get("availability", {})
     availability = AvailabilityConfig(
         timezone=avail_data.get("timezone", "UTC"),
-        working_hours=avail_data.get("working_hours", {}),
         meeting_duration_minutes=avail_data.get("meeting_duration_minutes", 30),
         buffer_minutes=avail_data.get("buffer_minutes", 15),
         min_notice_hours=avail_data.get("min_notice_hours", 4),
@@ -150,6 +182,29 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         owner_id=notif_data.get("owner_id", ""),
     )
 
+    booking_links = BookingLinksConfig(
+        links=raw.get("booking_links", {}),
+    )
+
+    services = []
+    for svc_data in raw.get("services", []):
+        if isinstance(svc_data, dict):
+            services.append(ServiceConfig(
+                name=svc_data.get("name", ""),
+                slug=svc_data.get("slug", ""),
+                duration_minutes=svc_data.get("duration_minutes", 30),
+                price=svc_data.get("price", 0),
+                currency=svc_data.get("currency", "USD"),
+                description=svc_data.get("description", ""),
+            ))
+
+    mcp_data = raw.get("mcp", {})
+    mcp = MCPConfig(
+        enabled=mcp_data.get("enabled", False),
+        transport=mcp_data.get("transport", "streamable-http"),
+        path=mcp_data.get("path", "/mcp"),
+    )
+
     return Config(
         owner=owner,
         availability=availability,
@@ -157,4 +212,7 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         llm=llm,
         channels=channels,
         notifications=notifications,
+        booking_links=booking_links,
+        services=services,
+        mcp=mcp,
     )

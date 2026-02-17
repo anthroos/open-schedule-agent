@@ -103,9 +103,13 @@ def cmd_slots(args: argparse.Namespace) -> None:
     from .calendar.google_calendar import GoogleCalendarProvider
     from .core.availability import AvailabilityEngine
 
+    from .database import Database
+
     config = load_config(args.config)
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
-    availability = AvailabilityEngine(config.availability, calendar)
+    db = Database()
+    db.connect()
+    availability = AvailabilityEngine(config.availability, calendar, db)
 
     async def show():
         slots = await availability.get_available_slots()
@@ -118,6 +122,29 @@ def cmd_slots(args: argparse.Namespace) -> None:
         print(f"\nTotal: {len(slots)} slots")
 
     asyncio.run(show())
+
+
+def cmd_mcp(args: argparse.Namespace) -> None:
+    """Run the MCP server (stdio transport for local testing / Claude Desktop)."""
+    from .config import load_config
+    from .calendar.google_calendar import GoogleCalendarProvider
+    from .core.availability import AvailabilityEngine
+    from .database import Database
+    from .mcp_server import create_mcp_server
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    config = load_config(args.config)
+    db = Database()
+    db.connect()
+    calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
+    availability = AvailabilityEngine(config.availability, calendar, db)
+
+    mcp = create_mcp_server(config, availability, calendar, db)
+    mcp.run(transport=args.transport)
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -151,11 +178,27 @@ async def _run_bot(config) -> None:
     llm = _build_llm(config)
     engine = SchedulingEngine(config, calendar, llm, db)
 
+    # Create MCP server if enabled
+    mcp_app = None
+    if config.mcp.enabled:
+        try:
+            from .mcp_server import create_mcp_server
+            mcp_server = create_mcp_server(config, engine.availability, calendar, db)
+            if config.mcp.transport == "streamable-http":
+                mcp_app = mcp_server.streamable_http_app()
+                print(f"MCP server enabled at {config.mcp.path}")
+        except ImportError:
+            print("[WARN] MCP dependencies not installed. Run: pip install schedulebot[mcp]")
+
     adapters = []
     for name, ch_config in config.channels.items():
         if not ch_config.enabled:
             continue
-        adapter = _build_channel(name, ch_config.extra, engine.handle_message)
+        adapter = _build_channel(
+            name, ch_config.extra, engine.handle_message, db,
+            mcp_app=mcp_app, mcp_path=config.mcp.path,
+            owner_name=config.owner.name,
+        )
         if adapter:
             adapters.append(adapter)
 
@@ -204,14 +247,14 @@ def _build_llm(config):
         raise ValueError(f"Unknown LLM provider: {provider}")
 
 
-def _build_channel(name, config_extra, on_message):
+def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp", owner_name="Owner"):
     """Build channel adapter by name."""
     if name == "telegram":
         from .channels.telegram import TelegramAdapter
         return TelegramAdapter(config_extra, on_message)
     elif name == "web":
         from .channels.web import WebAdapter
-        return WebAdapter(config_extra, on_message)
+        return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path, owner_name=owner_name)
     elif name == "slack":
         print(f"[WARN] Slack adapter not yet implemented (v0.2)")
         return None
@@ -251,6 +294,12 @@ def main():
     run_parser.add_argument("--dry-run", action="store_true", help="Don't create calendar events")
     run_parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
 
+    # mcp
+    mcp_parser = subparsers.add_parser("mcp", help="Run the MCP server")
+    mcp_parser.add_argument("-c", "--config", default="config.yaml", help="Config file path")
+    mcp_parser.add_argument("-t", "--transport", default="stdio", choices=["stdio", "streamable-http"], help="MCP transport")
+    mcp_parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -262,5 +311,6 @@ def main():
         "check": cmd_check,
         "slots": cmd_slots,
         "run": cmd_run,
+        "mcp": cmd_mcp,
     }
     commands[args.command](args)

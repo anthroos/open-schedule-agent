@@ -1,6 +1,6 @@
 """Tests for the conversation state machine and engine."""
 
-import asyncio
+from __future__ import annotations
 
 import pytest
 
@@ -14,7 +14,7 @@ from schedulebot.config import (
 )
 from schedulebot.core.engine import SchedulingEngine
 from schedulebot.database import Database
-from schedulebot.models import ConversationState, IncomingMessage, TimeSlot
+from schedulebot.models import AvailabilityRule, ConversationState, IncomingMessage
 
 
 class MockCalendar:
@@ -43,10 +43,12 @@ class MockLLM:
 @pytest.fixture
 def config():
     return Config(
-        owner=OwnerConfig(name="Test Owner"),
+        owner=OwnerConfig(
+            name="Test Owner",
+            owner_ids={"test": "owner-1"},
+        ),
         availability=AvailabilityConfig(
             timezone="UTC",
-            working_hours={"monday": ["09:00-17:00"]},
             meeting_duration_minutes=30,
             buffer_minutes=15,
             min_notice_hours=0,
@@ -62,6 +64,8 @@ def config():
 def db(tmp_path):
     d = Database(tmp_path / "test.db")
     d.connect()
+    # Add some availability rules
+    d.add_availability_rule(AvailabilityRule(day_of_week="monday", start_time="09:00", end_time="17:00"))
     yield d
     d.close()
 
@@ -124,3 +128,62 @@ async def test_booking_flow(config, db):
 
     # Should have created a booking
     assert "confirmed" in response.text.lower() or "Meeting confirmed" in response.text
+
+
+@pytest.mark.asyncio
+async def test_owner_mode_routing(config, db):
+    """Owner messages should be routed to schedule management."""
+    llm = MockLLM(["OK, I'll set Monday 10:00-18:00 [ADD_RULE:day=monday,start=10:00,end=18:00]"])
+    calendar = MockCalendar()
+    engine = SchedulingEngine(config, calendar, llm, db)
+
+    # Message from owner (sender_id matches config.owner.owner_ids.test)
+    msg = IncomingMessage(
+        channel="test",
+        sender_id="owner-1",
+        sender_name="Owner",
+        text="Set Monday 10 to 18",
+    )
+    response = await engine.handle_message(msg)
+
+    # Should have used owner prompt (check LLM got the right system prompt)
+    assert "schedule management" in llm.last_system_prompt.lower() or "owner" in llm.last_system_prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_guest_mode_routing(config, db):
+    """Non-owner messages should be routed to booking."""
+    llm = MockLLM(["Hi! I can help you schedule a meeting."])
+    calendar = MockCalendar()
+    engine = SchedulingEngine(config, calendar, llm, db)
+
+    msg = IncomingMessage(
+        channel="test",
+        sender_id="random-guest",
+        sender_name="Guest",
+        text="I want to book a meeting",
+    )
+    response = await engine.handle_message(msg)
+
+    # Should have used guest prompt
+    assert "scheduling assistant" in llm.last_system_prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_owner_show_rules(config, db):
+    """Owner /schedule command returns rules without LLM call."""
+    llm = MockLLM(["should not be called"])
+    calendar = MockCalendar()
+    engine = SchedulingEngine(config, calendar, llm, db)
+
+    msg = IncomingMessage(
+        channel="test",
+        sender_id="owner-1",
+        sender_name="Owner",
+        text="/schedule",
+    )
+    response = await engine.handle_message(msg)
+
+    # Should show rules, not call LLM
+    assert "monday" in response.text.lower() or "Monday" in response.text
+    assert llm._call_count == 0  # LLM was not called

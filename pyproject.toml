@@ -39,6 +39,7 @@ telegram = ["python-telegram-bot>=21.0"]
 slack = ["slack-bolt>=1.18"]
 discord = ["discord.py>=2.3"]
 web = ["fastapi>=0.110", "uvicorn>=0.27"]
+mcp = ["mcp[cli]>=1.0"]
 all = [
     "anthropic>=0.40",
     "openai>=1.0",
@@ -47,6 +48,7 @@ all = [
     "discord.py>=2.3",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "mcp[cli]>=1.0",
 ]
 dev = [
     "pytest>=8.0",

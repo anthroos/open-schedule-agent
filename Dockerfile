@@ -7,7 +7,6 @@ COPY src/ src/
 
 RUN pip install --no-cache-dir ".[all]"
 
-COPY config.example.yaml config.yaml
-COPY .env.example .env
+COPY config.yaml .
 
-CMD ["schedulebot", "run"]
+CMD ["schedulebot", "run", "-v"]
