@@ -1,0 +1,53 @@
+owner:
+  name: "Ivan Pasichnyk"
+  email: "ivan@welabeldata.com"
+  owner_ids:
+    telegram: "394755411"
+    web: "owner"
+
+availability:
+  timezone: "Asia/Makassar"
+  meeting_duration_minutes: 30
+  buffer_minutes: 15
+  min_notice_hours: 4
+  max_days_ahead: 14
+
+calendar:
+  provider: "google"
+  create_meet_link: true
+  credentials_path: "credentials.json"
+  token_path: "token.json"
+
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+
+channels:
+  telegram:
+    enabled: true
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+  web:
+    enabled: true
+    host: "0.0.0.0"
+    port: "${PORT}"
+    api_key: "${SCHEDULEBOT_API_KEY}"
+
+notifications:
+  channel: "telegram"
+  owner_id: "394755411"
+
+booking_links:
+  telegram: "https://t.me/shedule_meetings_bot"
+
+services:
+  - name: "30-minute consultation"
+    slug: "consultation-30"
+    duration_minutes: 30
+    price: 0
+    currency: "USD"
+    description: "Free introductory consultation on AI, data labeling, and automation"
+
+mcp:
+  enabled: true
+  transport: "streamable-http"
+  path: "/mcp"
