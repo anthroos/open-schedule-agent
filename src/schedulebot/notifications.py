@@ -23,11 +23,17 @@ class Notifier:
             f"New booking!\n"
             f"  Guest: {booking.guest_name}\n"
             f"  Time: {booking.slot}\n"
-            f"  Channel: {booking.guest_channel}\n"
-            f"  ID: {booking.id}"
+            f"  Channel: {booking.guest_channel}"
         )
+        if booking.guest_email:
+            text += f"\n  Email: {booking.guest_email}"
+        if booking.topic:
+            text += f"\n  Topic: {booking.topic}"
+        if booking.attendee_emails:
+            text += f"\n  +Attendees: {', '.join(booking.attendee_emails)}"
         if booking.meet_link:
             text += f"\n  Meet: {booking.meet_link}"
+        text += f"\n  ID: {booking.id}"
 
         try:
             await self.channel.send_message(self.owner_id, OutgoingMessage(text=text))

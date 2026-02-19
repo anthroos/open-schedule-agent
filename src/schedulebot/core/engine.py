@@ -64,11 +64,13 @@ class SchedulingEngine:
         calendar: CalendarProvider,
         llm: LLMProvider,
         db: Database,
+        notifier=None,
     ):
         self.config = config
         self.calendar = calendar
         self.llm = llm
         self.db = db
+        self.notifier = notifier
         self.availability = AvailabilityEngine(config.availability, calendar, db)
 
     def _is_owner(self, channel: str, sender_id: str) -> bool:
@@ -642,6 +644,7 @@ class SchedulingEngine:
                 meet_link="https://meet.google.com/dry-run",
             )
             self.db.save_booking(booking)
+            await self._notify_owner(booking)
             return booking
 
         try:
@@ -667,11 +670,20 @@ class SchedulingEngine:
                 meet_link=event.get("meet_link"),
             )
             self.db.save_booking(booking)
+            await self._notify_owner(booking)
             return booking
 
         except Exception as e:
             logger.error(f"Failed to create booking: {e}")
             return None
+
+    async def _notify_owner(self, booking: Booking) -> None:
+        """Send booking notification to owner (fire-and-forget)."""
+        if self.notifier:
+            try:
+                await self.notifier.notify_new_booking(booking)
+            except Exception as e:
+                logger.error(f"Failed to notify owner: {e}")
 
     def _format_confirmation(self, booking: Booking) -> str:
         """Format a booking confirmation message."""

@@ -205,6 +205,16 @@ async def _run_bot(config) -> None:
         if adapter:
             adapters.append(adapter)
 
+    # Wire owner notifications
+    notif_channel = config.notifications.channel
+    notif_owner_id = config.notifications.owner_id
+    if notif_channel and notif_owner_id:
+        notif_adapter = next((a for a in adapters if a.name == notif_channel), None)
+        if notif_adapter:
+            from .notifications import Notifier
+            engine.notifier = Notifier(notif_adapter, notif_owner_id)
+            print(f"Owner notifications enabled via {notif_channel} -> {notif_owner_id}")
+
     if not adapters:
         print("No channels enabled. Enable at least one channel in config.yaml.")
         sys.exit(1)
