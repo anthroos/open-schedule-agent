@@ -21,9 +21,17 @@ calendar:
   token_path: "token.json"
 
 llm:
-  provider: "anthropic"  # anthropic | openai | ollama
+  provider: "anthropic"  # anthropic | openai | ollama (auto-detected from API keys if missing)
   model: "claude-haiku-4-20250414"
-  # For ollama:
+  # Auto-detection: if ANTHROPIC_API_KEY is not set but OPENAI_API_KEY is,
+  # the provider switches to openai automatically (and vice versa).
+  # Model is also adjusted if it doesn't match the provider.
+  #
+  # For openai:
+  # provider: "openai"
+  # model: "gpt-4o-mini"
+  #
+  # For ollama (text-based parsing, no function calling):
   # provider: "ollama"
   # model: "llama3"
   # base_url: "http://localhost:11434"

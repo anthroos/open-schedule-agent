@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
+
+from .types import LLMToolResponse
 
 
 class LLMProvider(ABC):
@@ -24,3 +27,16 @@ class LLMProvider(ABC):
             The assistant's response text.
         """
         ...
+
+    async def chat_with_tools(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict[str, Any]],
+    ) -> LLMToolResponse:
+        """Chat with tool definitions. Returns text + any tool calls.
+
+        Tools are in Anthropic format (input_schema). Providers convert internally.
+        Override this method to enable function-calling for a provider.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support tool use")

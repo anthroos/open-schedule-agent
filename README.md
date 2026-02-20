@@ -56,7 +56,7 @@ calendar:
   create_meet_link: true
 
 llm:
-  provider: "anthropic"     # anthropic | openai | ollama
+  provider: "anthropic"     # anthropic | openai | ollama (auto-detected)
   model: "claude-haiku-4-20250414"
 
 channels:
@@ -77,6 +77,16 @@ channels:
 | `schedulebot slots` | Show available time slots (for debugging) |
 | `schedulebot run` | Start the bot |
 | `schedulebot run --dry-run` | Run without creating real calendar events |
+
+## LLM Providers
+
+| Provider | Function Calling | Auto-detected | Notes |
+|----------|:---:|:---:|-------|
+| Anthropic (Claude) | Yes | Yes | Recommended. Set `ANTHROPIC_API_KEY`. |
+| OpenAI (GPT) | Yes | Yes | Set `OPENAI_API_KEY`. |
+| Ollama (local) | No | No | Uses text-based parsing. For best results use Anthropic or OpenAI. |
+
+**Auto-detection:** Just set your API key in `.env`. If `provider: "anthropic"` but only `OPENAI_API_KEY` is set, schedulebot switches to OpenAI automatically (and adjusts the model). No config changes needed.
 
 ## Architecture
 

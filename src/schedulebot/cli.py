@@ -245,17 +245,40 @@ async def _run_bot(config) -> None:
 
 
 def _build_llm(config):
-    """Build LLM provider from config."""
+    """Build LLM provider from config, with auto-detection of API keys."""
+    import os
+
     provider = config.llm.provider.lower()
+    model = config.llm.model
+
+    has_anthropic_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_openai_key = bool(os.environ.get("OPENAI_API_KEY"))
+
+    # Auto-detect: if configured provider's key is missing, try the other
+    if provider == "anthropic" and not has_anthropic_key and has_openai_key:
+        print("[auto-detect] ANTHROPIC_API_KEY not found, switching to OpenAI")
+        provider = "openai"
+    elif provider == "openai" and not has_openai_key and has_anthropic_key:
+        print("[auto-detect] OPENAI_API_KEY not found, switching to Anthropic")
+        provider = "anthropic"
+
+    # Fix model mismatch after provider switch
+    if provider == "openai" and model.startswith("claude"):
+        model = "gpt-4o-mini"
+        print(f"[auto-detect] Model adjusted to {model}")
+    elif provider == "anthropic" and model.startswith("gpt"):
+        model = "claude-haiku-4-20250414"
+        print(f"[auto-detect] Model adjusted to {model}")
+
     if provider == "anthropic":
         from .llm.anthropic import AnthropicProvider
-        return AnthropicProvider(model=config.llm.model)
+        return AnthropicProvider(model=model)
     elif provider == "openai":
         from .llm.openai import OpenAIProvider
-        return OpenAIProvider(model=config.llm.model)
+        return OpenAIProvider(model=model)
     elif provider == "ollama":
         from .llm.ollama import OllamaProvider
-        return OllamaProvider(model=config.llm.model, base_url=config.llm.base_url or "http://localhost:11434")
+        return OllamaProvider(model=model, base_url=config.llm.base_url or "http://localhost:11434")
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
 

@@ -3,28 +3,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Any
 
 from .base import LLMProvider
-
-
-@dataclass
-class ToolCall:
-    """A single tool invocation from the LLM."""
-
-    id: str
-    name: str
-    input: dict[str, Any]
-
-
-@dataclass
-class LLMToolResponse:
-    """Response from chat_with_tools: text + tool calls."""
-
-    text: str
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    stop_reason: str = ""
+from .types import LLMToolResponse, ToolCall
 
 
 class AnthropicProvider(LLMProvider):
