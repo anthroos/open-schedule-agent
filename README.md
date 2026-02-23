@@ -182,11 +182,17 @@ class MyAdapter(ChannelAdapter):
         ...
 ```
 
-## Docker
+## Deploy
+
+### Docker
 
 ```bash
 docker compose up -d
 ```
+
+### Railway
+
+One-click cloud deploy with auto-HTTPS. See the [Railway deployment guide](docs/deploy-railway.md).
 
 ## Development
 
