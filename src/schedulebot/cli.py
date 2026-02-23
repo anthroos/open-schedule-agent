@@ -5,12 +5,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import shutil
 import signal
 import sys
 from pathlib import Path
 
 from . import __version__
+
+logger = logging.getLogger(__name__)
+
+
+def _read_package_data(filename: str) -> str | None:
+    """Read a bundled data file from the package."""
+    try:
+        import importlib.resources as pkg_resources
+        ref = pkg_resources.files("schedulebot.data").joinpath(filename)
+        return ref.read_text(encoding="utf-8")
+    except Exception:
+        return None
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -18,40 +29,41 @@ def cmd_init(args: argparse.Namespace) -> None:
     config_dest = Path("config.yaml")
     env_dest = Path(".env")
 
-    # Find example files from package
-    pkg_dir = Path(__file__).parent.parent.parent  # src/schedulebot -> project root
-    config_src = pkg_dir / "config.example.yaml"
-    env_src = pkg_dir / ".env.example"
-
     if config_dest.exists() and not args.force:
-        print(f"config.yaml already exists. Use --force to overwrite.")
+        print("config.yaml already exists. Use --force to overwrite.")
     else:
-        if config_src.exists():
-            shutil.copy(config_src, config_dest)
+        content = _read_package_data("config.example.yaml")
+        if content:
+            config_dest.write_text(content)
         else:
-            # Fallback: write a minimal config
             config_dest.write_text(
-                "owner:\n  name: \"Your Name\"\n\navailability:\n  timezone: \"UTC\"\n  "
-                "working_hours:\n    monday: [\"09:00-17:00\"]\n\ncalendar:\n  provider: "
-                "\"google\"\n\nllm:\n  provider: \"anthropic\"\n\nchannels:\n  telegram:\n    "
-                "enabled: true\n    bot_token: \"${TELEGRAM_BOT_TOKEN}\"\n"
+                "owner:\n  name: \"Your Name\"\n  email: \"you@example.com\"\n\n"
+                "availability:\n  timezone: \"UTC\"\n  meeting_duration_minutes: 30\n\n"
+                "calendar:\n  provider: \"google\"\n\nllm:\n  provider: \"anthropic\"\n\n"
+                "channels:\n  telegram:\n    enabled: true\n"
+                "    bot_token: \"${TELEGRAM_BOT_TOKEN}\"\n"
             )
         print(f"Created {config_dest}")
 
     if env_dest.exists() and not args.force:
-        print(f".env already exists. Use --force to overwrite.")
+        print(".env already exists. Use --force to overwrite.")
     else:
-        if env_src.exists():
-            shutil.copy(env_src, env_dest)
+        content = _read_package_data("env.example")
+        if content:
+            env_dest.write_text(content)
         else:
-            env_dest.write_text("ANTHROPIC_API_KEY=sk-ant-...\nTELEGRAM_BOT_TOKEN=...\n")
+            env_dest.write_text(
+                "# LLM API key\nANTHROPIC_API_KEY=sk-ant-...\n\n"
+                "# Telegram\nTELEGRAM_BOT_TOKEN=...\nOWNER_TELEGRAM_ID=...\n"
+            )
         print(f"Created {env_dest}")
 
     print("\nNext steps:")
     print("  1. Edit config.yaml with your details")
     print("  2. Edit .env with your API keys")
-    print("  3. Set up Google Calendar: schedulebot check")
-    print("  4. Run: schedulebot run")
+    print("  3. Set up Google Calendar: see docs/setup-google.md")
+    print("  4. Verify: schedulebot check")
+    print("  5. Run: schedulebot run")
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -156,7 +168,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         config.dry_run = True
 
     if config.dry_run:
-        print("Running in DRY RUN mode (no calendar events will be created)\n")
+        logger.warning("Running in DRY RUN mode (no calendar events will be created)")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -189,9 +201,9 @@ async def _run_bot(config) -> None:
             mcp_server = create_mcp_server(config, engine.availability, calendar, db)
             if config.mcp.transport == "streamable-http":
                 mcp_app = mcp_server.streamable_http_app()
-                print(f"MCP server enabled at {config.mcp.path}")
+                logger.info("MCP server enabled at %s", config.mcp.path)
         except ImportError:
-            print("[WARN] MCP dependencies not installed. Run: pip install schedulebot[mcp]")
+            logger.warning("MCP dependencies not installed. Run: pip install schedulebot[mcp]")
 
     adapters = []
     for name, ch_config in config.channels.items():
@@ -213,19 +225,19 @@ async def _run_bot(config) -> None:
         if notif_adapter:
             from .notifications import Notifier
             engine.notifier = Notifier(notif_adapter, notif_owner_id)
-            print(f"Owner notifications enabled via {notif_channel} -> {notif_owner_id}")
+            logger.info("Owner notifications enabled via %s -> %s", notif_channel, notif_owner_id)
 
     if not adapters:
-        print("No channels enabled. Enable at least one channel in config.yaml.")
+        logger.error("No channels enabled. Enable at least one channel in config.yaml.")
         sys.exit(1)
 
-    print(f"Starting {len(adapters)} channel(s): {', '.join(a.name for a in adapters)}")
+    logger.info("Starting %d channel(s): %s", len(adapters), ", ".join(a.name for a in adapters))
 
     # Handle graceful shutdown
     stop_event = asyncio.Event()
 
     def signal_handler():
-        print("\nShutting down...")
+        logger.info("Shutting down...")
         stop_event.set()
 
     loop = asyncio.get_event_loop()
@@ -256,19 +268,19 @@ def _build_llm(config):
 
     # Auto-detect: if configured provider's key is missing, try the other
     if provider == "anthropic" and not has_anthropic_key and has_openai_key:
-        print("[auto-detect] ANTHROPIC_API_KEY not found, switching to OpenAI")
+        logger.info("[auto-detect] ANTHROPIC_API_KEY not found, switching to OpenAI")
         provider = "openai"
     elif provider == "openai" and not has_openai_key and has_anthropic_key:
-        print("[auto-detect] OPENAI_API_KEY not found, switching to Anthropic")
+        logger.info("[auto-detect] OPENAI_API_KEY not found, switching to Anthropic")
         provider = "anthropic"
 
     # Fix model mismatch after provider switch
     if provider == "openai" and model.startswith("claude"):
         model = "gpt-4o-mini"
-        print(f"[auto-detect] Model adjusted to {model}")
+        logger.info("[auto-detect] Model adjusted to %s", model)
     elif provider == "anthropic" and model.startswith("gpt"):
         model = "claude-haiku-4-20250414"
-        print(f"[auto-detect] Model adjusted to {model}")
+        logger.info("[auto-detect] Model adjusted to %s", model)
 
     if provider == "anthropic":
         from .llm.anthropic import AnthropicProvider
@@ -292,13 +304,13 @@ def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_pa
         from .channels.web import WebAdapter
         return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path, owner_name=owner_name)
     elif name == "slack":
-        print(f"[WARN] Slack adapter not yet implemented (v0.2)")
-        return None
+        from .channels.slack import SlackAdapter
+        return SlackAdapter(config_extra, on_message)
     elif name == "discord":
-        print(f"[WARN] Discord adapter not yet implemented (v0.2)")
-        return None
+        from .channels.discord import DiscordAdapter
+        return DiscordAdapter(config_extra, on_message)
     else:
-        print(f"[WARN] Unknown channel: {name}")
+        logger.warning("Unknown channel: %s", name)
         return None
 
 

@@ -4,7 +4,7 @@ GUEST_TOOLS = [
     {
         "name": "collect_guest_info",
         "description": (
-            "Save the guest's contact info and meeting topic. "
+            "Save the guest's contact info, location, and meeting topic. "
             "Call this as soon as you know the guest's name and email. "
             "You MUST call this before confirm_booking."
         ),
@@ -18,6 +18,10 @@ GUEST_TOOLS = [
                 "email": {
                     "type": "string",
                     "description": "Guest's email for the calendar invite.",
+                },
+                "city": {
+                    "type": "string",
+                    "description": "Guest's city or timezone (e.g. 'Kyiv', 'New York', 'Europe/Kyiv'). Used to show slots in their local time.",
                 },
                 "topic": {
                     "type": "string",

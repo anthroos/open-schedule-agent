@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 
 from ..config import CalendarConfig
 from ..models import TimeSlot
+from ..retry import retry_async
 from .base import CalendarProvider
 from .google_auth import get_google_credentials
 
@@ -43,7 +44,10 @@ class GoogleCalendarProvider(CalendarProvider):
             "items": [{"id": "primary"}],
         }
 
-        result = self.service.freebusy().query(body=body).execute()
+        result = await retry_async(
+            self.service.freebusy().query(body=body).execute,
+            label="google.freebusy",
+        )
         busy_slots = []
 
         for period in result.get("calendars", {}).get("primary", {}).get("busy", []):
@@ -96,14 +100,15 @@ class GoogleCalendarProvider(CalendarProvider):
             }
             conference_version = 1
 
-        created = (
+        created = await retry_async(
             self.service.events()
             .insert(
                 calendarId="primary",
                 body=event_body,
                 conferenceDataVersion=conference_version,
             )
-            .execute()
+            .execute,
+            label="google.create_event",
         )
 
         result = {"event_id": created.get("id")}

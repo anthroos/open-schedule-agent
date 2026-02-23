@@ -63,6 +63,10 @@ MIGRATIONS = [
         "ALTER TABLE bookings ADD COLUMN topic TEXT DEFAULT ''",
         "ALTER TABLE bookings ADD COLUMN attendee_emails TEXT DEFAULT '[]'",
     ],
+    # Migration 2: Add guest_timezone to conversations
+    [
+        "ALTER TABLE conversations ADD COLUMN guest_timezone TEXT DEFAULT ''",
+    ],
 ]
 
 
@@ -119,6 +123,7 @@ class Database:
             guest_name=row["guest_name"],
             guest_email=row["guest_email"] or "",
             guest_topic=row["guest_topic"] or "",
+            guest_timezone=row["guest_timezone"] if "guest_timezone" in row.keys() else "",
             attendee_emails=json.loads(row["attendee_emails"] or "[]"),
             selected_slot=selected_slot,
             messages=json.loads(row["messages"]),
@@ -132,9 +137,9 @@ class Database:
         self.conn.execute(
             """INSERT OR REPLACE INTO conversations
             (sender_id, channel, state, mode, guest_name, guest_email, guest_topic,
-             attendee_emails, selected_slot_start, selected_slot_end,
+             guest_timezone, attendee_emails, selected_slot_start, selected_slot_end,
              messages, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 conv.sender_id,
                 conv.channel,
@@ -143,6 +148,7 @@ class Database:
                 conv.guest_name,
                 conv.guest_email,
                 conv.guest_topic,
+                conv.guest_timezone,
                 json.dumps(conv.attendee_emails),
                 slot_start,
                 slot_end,

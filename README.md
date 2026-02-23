@@ -1,36 +1,86 @@
 # schedulebot
 
-Open-source AI scheduling agent with pluggable channel adapters.
+[![CI](https://github.com/anthroos/open-schedule-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/anthroos/open-schedule-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-Your own Calendly, but conversational. Works with Telegram, Web API, Slack, Discord — or build your own adapter.
+**Open-source AI scheduling agent. Your own Calendly, but conversational.**
 
-## How it works
+Both sides — the guest **and** the owner — talk to AI. No dashboards, no forms.
 
-1. Someone messages your bot (Telegram, web widget, etc.)
-2. AI assistant asks their name, shows available time slots
-3. Guest picks a slot, confirms
-4. Google Calendar event + Meet link created automatically
-5. You get a notification
+```
+Guest: "Hi, I'd like to schedule a call"
+Bot:   "Sure! What's your name, email, and topic?"
+Guest: "Maria, maria@corp.com, about partnership"
+Bot:   "Got it! Here are available slots: ..."
+Guest: "Slot 3"
+Bot:   "Confirmed! Meeting with Ivan on Thu 14:00. Google Meet link: ..."
+```
+
+## Features
+
+- **Dual AI mode** — guests book meetings, owners manage schedule, both via conversation
+- **Multi-LLM** — Anthropic Claude, OpenAI GPT, or local Ollama (auto-detected)
+- **Multi-channel** — Telegram, Slack, Discord, Web API (or build your own adapter)
+- **Google Calendar** — freebusy check + event creation + Google Meet links
+- **Owner notifications** — get Telegram alerts when someone books
+- **MCP server** — integrate with any AI agent via Model Context Protocol
+- **Input validation** — rate limiting, message length, prompt injection detection
+- **Retry with backoff** — all external API calls protected against transient failures
+- **Guest timezone** — asks guest their city, shows slots in their local time
+- **Dry-run mode** — test the full flow without creating real events
 
 ## Quick start
 
 ```bash
-pip install schedulebot[telegram]
+git clone https://github.com/anthroos/open-schedule-agent.git
+cd open-schedule-agent
+pip install -e ".[telegram]"
 schedulebot init
 # Edit config.yaml and .env with your details
-schedulebot check
+schedulebot check    # sets up Google Calendar auth
 schedulebot run
 ```
 
-## Install options
+### Prerequisites
+
+- Python 3.10+
+- Google account with Google Calendar ([setup guide](docs/setup-google.md))
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
+- Anthropic or OpenAI API key
+
+### Install options
 
 ```bash
-pip install schedulebot                    # core only
-pip install schedulebot[telegram]          # + Telegram
-pip install schedulebot[web]               # + FastAPI web endpoint
-pip install schedulebot[telegram,web]      # multiple channels
-pip install schedulebot[all]               # everything
+pip install -e "."                      # core only
+pip install -e ".[telegram]"            # + Telegram
+pip install -e ".[web]"                 # + FastAPI web endpoint
+pip install -e ".[telegram,web]"        # multiple channels
+pip install -e ".[all]"                 # everything
 ```
+
+## How it works
+
+```
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Telegram │  │  Slack   │  │ Discord  │  │ Web API  │
+│ Adapter  │  │ Adapter  │  │ Adapter  │  │ Adapter  │
+└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+       │              │              │              │
+       └──────┬───────┘──────┬───────┘──────────────┘
+                    │
+          ┌─────────▼──────────┐
+          │  SchedulingEngine  │
+          │  (owner / guest)   │
+          └──┬─────┬────────┬──┘
+             │     │        │
+    ┌────────▼─┐ ┌─▼──────┐ ┌▼────────────┐
+    │   LLM    │ │ Avail. │ │  Google Cal  │
+    │ Provider │ │ Engine │ │  (freebusy)  │
+    └──────────┘ └────────┘ └─────────────┘
+```
+
+The core engine is channel-agnostic. It receives `IncomingMessage`, returns `OutgoingMessage`. Channel adapters handle the translation.
 
 ## Configuration
 
@@ -42,12 +92,6 @@ owner:
 
 availability:
   timezone: "Europe/Kyiv"
-  working_hours:
-    monday: ["09:00-17:00"]
-    tuesday: ["09:00-13:30"]
-    wednesday: ["09:00-17:00"]
-    thursday: ["09:00-17:00"]
-    friday: ["09:00-13:30"]
   meeting_duration_minutes: 30
   buffer_minutes: 15
 
@@ -77,6 +121,7 @@ channels:
 | `schedulebot slots` | Show available time slots (for debugging) |
 | `schedulebot run` | Start the bot |
 | `schedulebot run --dry-run` | Run without creating real calendar events |
+| `schedulebot mcp` | Run as MCP server (stdio or streamable-http) |
 
 ## LLM Providers
 
@@ -84,50 +129,28 @@ channels:
 |----------|:---:|:---:|-------|
 | Anthropic (Claude) | Yes | Yes | Recommended. Set `ANTHROPIC_API_KEY`. |
 | OpenAI (GPT) | Yes | Yes | Set `OPENAI_API_KEY`. |
-| Ollama (local) | No | No | Uses text-based parsing. For best results use Anthropic or OpenAI. |
+| Ollama (local) | No | No | Text-based fallback. No tool use. |
 
 **Auto-detection:** Just set your API key in `.env`. If `provider: "anthropic"` but only `OPENAI_API_KEY` is set, schedulebot switches to OpenAI automatically (and adjusts the model). No config changes needed.
 
-## Architecture
+## Owner mode
+
+Owners manage their schedule by chatting:
 
 ```
-Channel (TG/Slack/Web/Discord)
-  → ChannelAdapter (abstract interface)
-    → SchedulingEngine (channel-agnostic core)
-      → AvailabilityEngine (YAML rules - calendar busy times)
-      → LLM (Anthropic/OpenAI/Ollama)
-      → Google Calendar (freebusy + event creation)
-```
+Owner: "Add Monday 10-18"
+Bot:   "Added availability: Monday 10:00-18:00"
 
-The core engine doesn't know what Telegram or Slack is. It receives `IncomingMessage`, returns `OutgoingMessage`. Channel adapters handle the translation.
+Owner: "Block Saturday"
+Bot:   "Blocked: Saturday (all day)"
 
-## Building your own adapter
-
-```python
-from schedulebot.channels.base import ChannelAdapter
-from schedulebot.models import IncomingMessage, OutgoingMessage
-
-class MyAdapter(ChannelAdapter):
-    @property
-    def name(self) -> str:
-        return "my_channel"
-
-    async def start(self) -> None:
-        # Start listening for messages
-        ...
-
-    async def stop(self) -> None:
-        # Graceful shutdown
-        ...
-
-    async def send_message(self, sender_id: str, message: OutgoingMessage) -> None:
-        # Send a message to a user
-        ...
+Owner: "/schedule"
+Bot:   "Monday: 10:00-18:00, Tuesday: 09:00-13:30, ..."
 ```
 
 ## Web API
 
-When the web channel is enabled, you get a REST API:
+When the web channel is enabled:
 
 ```bash
 # Send a message
@@ -139,10 +162,39 @@ curl -X POST http://localhost:8080/api/message \
 curl http://localhost:8080/api/health
 ```
 
+## Building your own adapter
+
+```python
+from schedulebot.channels.base import ChannelAdapter
+
+class MyAdapter(ChannelAdapter):
+    @property
+    def name(self) -> str:
+        return "my_channel"
+
+    async def start(self) -> None:
+        ...
+
+    async def stop(self) -> None:
+        ...
+
+    async def send_message(self, sender_id, message) -> None:
+        ...
+```
+
 ## Docker
 
 ```bash
 docker compose up -d
+```
+
+## Development
+
+```bash
+git clone https://github.com/anthroos/open-schedule-agent.git
+cd open-schedule-agent
+pip install -e ".[all,dev]"
+pytest tests/ -v
 ```
 
 ## License

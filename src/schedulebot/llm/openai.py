@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any
 
+from ..retry import retry_async
 from .base import LLMProvider
 from .tool_converter import anthropic_tools_to_openai
 from .types import LLMToolResponse, ToolCall
@@ -36,10 +37,12 @@ class OpenAIProvider(LLMProvider):
 
     async def chat(self, system_prompt: str, messages: list[dict[str, str]]) -> str:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
-        response = self.client.chat.completions.create(
+        response = await retry_async(
+            self.client.chat.completions.create,
             model=self.model,
             messages=full_messages,
             max_tokens=2048,
+            label="openai.chat",
         )
         return response.choices[0].message.content
 
@@ -57,11 +60,13 @@ class OpenAIProvider(LLMProvider):
         openai_tools = anthropic_tools_to_openai(tools)
         openai_messages = self._convert_messages(system_prompt, messages)
 
-        response = self.client.chat.completions.create(
+        response = await retry_async(
+            self.client.chat.completions.create,
             model=self.model,
             messages=openai_messages,
             tools=openai_tools,
             max_tokens=2048,
+            label="openai.chat_with_tools",
         )
 
         choice = response.choices[0]

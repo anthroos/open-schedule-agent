@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from ..retry import retry_async
 from .base import LLMProvider
 from .types import LLMToolResponse, ToolCall
 
@@ -30,11 +31,13 @@ class AnthropicProvider(LLMProvider):
 
     async def chat(self, system_prompt: str, messages: list[dict[str, str]]) -> str:
         """Text-only chat (used by guest mode and backward compat)."""
-        response = self.client.messages.create(
+        response = await retry_async(
+            self.client.messages.create,
             model=self.model,
             max_tokens=2048,
             system=system_prompt,
             messages=messages,
+            label="anthropic.chat",
         )
         return response.content[0].text
 
@@ -49,12 +52,14 @@ class AnthropicProvider(LLMProvider):
         The caller is responsible for executing tools and sending results
         back in a follow-up call if needed.
         """
-        response = self.client.messages.create(
+        response = await retry_async(
+            self.client.messages.create,
             model=self.model,
             max_tokens=2048,
             system=system_prompt,
             messages=messages,
             tools=tools,
+            label="anthropic.chat_with_tools",
         )
 
         text_parts = []

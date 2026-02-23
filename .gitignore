@@ -9,3 +9,5 @@ credentials.json
 *.db
 .pytest_cache/
 deploy-railway.sh
+config.yaml
+social-posts.md

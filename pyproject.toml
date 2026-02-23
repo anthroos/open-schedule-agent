@@ -66,5 +66,5 @@ dev = [
 schedulebot = "schedulebot.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/welabeldata/schedulebot"
-Repository = "https://github.com/welabeldata/schedulebot"
+Homepage = "https://github.com/anthroos/open-schedule-agent"
+Repository = "https://github.com/anthroos/open-schedule-agent"

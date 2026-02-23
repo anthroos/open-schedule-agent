@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.request
 
+from ..retry import retry_async
 from .base import LLMProvider
 
 
@@ -21,18 +22,20 @@ class OllamaProvider(LLMProvider):
 
     async def chat(self, system_prompt: str, messages: list[dict[str, str]]) -> str:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
-        payload = json.dumps({
-            "model": self.model,
-            "messages": full_messages,
-            "stream": False,
-        }).encode()
 
-        req = urllib.request.Request(
-            f"{self.base_url}/api/chat",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
+        def _call():
+            payload = json.dumps({
+                "model": self.model,
+                "messages": full_messages,
+                "stream": False,
+            }).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read())
 
+        data = await retry_async(_call, label="ollama.chat")
         return data.get("message", {}).get("content", "")

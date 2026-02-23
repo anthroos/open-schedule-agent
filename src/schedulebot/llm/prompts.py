@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from ..models import ConversationState, TimeSlot
 
 
-def format_slots(slots: list[TimeSlot]) -> str:
-    """Format available slots for the LLM prompt."""
+def format_slots(slots: list[TimeSlot], guest_tz: ZoneInfo | None = None) -> str:
+    """Format available slots for the LLM prompt, optionally in guest's timezone."""
     if not slots:
         return "No available slots in the coming days."
     lines = []
     for i, slot in enumerate(slots, 1):
-        lines.append(f"  {i}. {slot}")
+        if guest_tz:
+            lines.append(f"  {i}. {slot.format_in_tz(guest_tz)}")
+        else:
+            lines.append(f"  {i}. {slot}")
     return "\n".join(lines)
 
 
@@ -51,15 +56,32 @@ def build_system_prompt_tools(
     guest_name: str = "",
     guest_email: str = "",
     guest_topic: str = "",
+    guest_timezone: str = "",
+    owner_timezone: str = "",
 ) -> str:
     """Build the system prompt for guest mode when using tool calling."""
-    slots_text = format_slots(slots)
+    guest_tz = None
+    if guest_timezone:
+        try:
+            guest_tz = ZoneInfo(guest_timezone)
+        except (KeyError, ValueError):
+            pass
+
+    slots_text = format_slots(slots, guest_tz=guest_tz)
+
+    tz_label = ""
+    if guest_timezone:
+        tz_label = f" (times shown in {guest_timezone})"
+    elif owner_timezone:
+        tz_label = f" (times in {owner_timezone} — owner's timezone)"
 
     info_status = ""
     if guest_name and guest_email:
         info_status = f"GUEST NAME: {guest_name}\nGUEST EMAIL: {guest_email}"
         if guest_topic:
             info_status += f"\nTOPIC: {guest_topic}"
+        if guest_timezone:
+            info_status += f"\nGUEST TIMEZONE: {guest_timezone}"
         info_status += "\n(Guest info collected — ready to book.)"
     elif guest_name:
         info_status = f"GUEST NAME: {guest_name}\n(Still need email.)"
@@ -76,21 +98,29 @@ PERSONALITY:
 
 CONVERSATION FLOW:
 1. Greet the guest. Ask when they'd like to meet (or show slots if they ask).
-2. As the conversation progresses, collect: name, email, and what the meeting is about.
+2. As the conversation progresses, collect: name, email, city/location, and what the meeting is about.
    You don't have to ask all at once — weave questions naturally into the chat.
-3. Once you have name + email, call collect_guest_info immediately.
+   IMPORTANT: Ask where the guest is located (city or country) so you can show times in their timezone.
+3. Once you have name + email, call collect_guest_info immediately (include city if known).
 4. When the guest picks a slot, ask if they want to add anyone else (max 2 emails).
 5. Call confirm_booking with the slot number (and attendee_emails if provided).
 
 TOOL RULES:
 - You MUST call collect_guest_info BEFORE confirm_booking. Booking will fail otherwise.
-- collect_guest_info requires name and email. Topic is optional but nice to have.
+- collect_guest_info requires name and email. City and topic are optional but important.
+- When you call collect_guest_info with a city, the slots will be recalculated in the guest's timezone.
 - confirm_booking takes slot_number (1-based) and optional attendee_emails (max 2).
 - If the guest provides info across multiple messages, wait until you have at least name + email.
 
+TIMEZONE NOTE:
+- The available slots below are shown in the guest's local timezone if their city/timezone is known.
+- If the guest's timezone is NOT yet known, slots are in the owner's timezone ({owner_timezone}).
+- ALWAYS ask the guest where they are located before showing slot times.
+- In the booking confirmation, tell the guest to check their calendar for the exact time in their timezone.
+
 {info_status}
 
-AVAILABLE SLOTS (use these numbers for confirm_booking):
+AVAILABLE SLOTS{tz_label} (use these numbers for confirm_booking):
 {slots_text}
 
 If no slots work, tell the guest you'll check with {owner_name} and get back to them.

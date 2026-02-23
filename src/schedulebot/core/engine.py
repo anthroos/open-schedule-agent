@@ -414,6 +414,8 @@ class SchedulingEngine:
             guest_name=conv.guest_name,
             guest_email=conv.guest_email,
             guest_topic=conv.guest_topic,
+            guest_timezone=conv.guest_timezone,
+            owner_timezone=self.config.availability.timezone,
         )
 
         api_messages = self._build_api_messages(conv.messages)
@@ -458,7 +460,7 @@ class SchedulingEngine:
                 if tc.name == "confirm_booking" and conv.state == ConversationState.CONFIRMATION:
                     booking = await self._create_booking(conv)
                     if booking:
-                        confirmation = self._format_confirmation(booking)
+                        confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
                         conv.state = ConversationState.BOOKED
                         tool_output = f"Booking confirmed: {confirmation}"
                     else:
@@ -475,7 +477,7 @@ class SchedulingEngine:
 
             # If booking succeeded, get final text and return
             if booking:
-                confirmation = self._format_confirmation(booking)
+                confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
                 try:
                     final = await self.llm.chat_with_tools(
                         system_prompt, api_messages, GUEST_TOOLS
@@ -504,6 +506,7 @@ class SchedulingEngine:
             guest_name = params.get("name", "").strip()
             guest_email = params.get("email", "").strip()
             topic = params.get("topic", "").strip()
+            city = params.get("city", "").strip()
 
             if not guest_name:
                 return "Error: name is required."
@@ -514,8 +517,20 @@ class SchedulingEngine:
             conv.guest_email = guest_email
             conv.guest_topic = topic
             conv.state = ConversationState.COLLECTING_INFO
-            logger.info(f"Guest info collected: {guest_name} <{guest_email}> topic={topic}")
-            return f"Saved: {guest_name}, {guest_email}" + (f", topic: {topic}" if topic else "")
+
+            # Resolve city to IANA timezone
+            tz_info = ""
+            if city:
+                from ..timezone_resolver import resolve_timezone
+                resolved = resolve_timezone(city)
+                if resolved:
+                    conv.guest_timezone = resolved
+                    tz_info = f", timezone: {resolved}"
+                else:
+                    tz_info = f" (could not resolve timezone for '{city}' — slots shown in owner timezone)"
+
+            logger.info(f"Guest info collected: {guest_name} <{guest_email}> topic={topic} tz={conv.guest_timezone}")
+            return f"Saved: {guest_name}, {guest_email}" + (f", topic: {topic}" if topic else "") + tz_info
 
         if name == "confirm_booking":
             # Require guest info first
@@ -567,7 +582,7 @@ class SchedulingEngine:
         if action == "book" and conv.selected_slot:
             booking = await self._create_booking(conv)
             if booking:
-                confirmation = self._format_confirmation(booking)
+                confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
                 conv.state = ConversationState.BOOKED
                 conv.add_message("assistant", confirmation)
                 return OutgoingMessage(
@@ -685,13 +700,23 @@ class SchedulingEngine:
             except Exception as e:
                 logger.error(f"Failed to notify owner: {e}")
 
-    def _format_confirmation(self, booking: Booking) -> str:
+    def _format_confirmation(self, booking: Booking, guest_timezone: str = "") -> str:
         """Format a booking confirmation message."""
-        lines = [
-            "Meeting confirmed!",
-            f"  {booking.slot}",
-        ]
+        lines = ["Meeting confirmed!"]
+
+        if guest_timezone:
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(guest_timezone)
+                lines.append(f"  {booking.slot.format_in_tz(tz)}")
+            except (KeyError, ValueError):
+                lines.append(f"  {booking.slot}")
+        else:
+            lines.append(f"  {booking.slot}")
+
         if booking.meet_link:
             lines.append(f"  Join: {booking.meet_link}")
         lines.append(f"  Booking ID: {booking.id}")
+        if booking.guest_email:
+            lines.append(f"  Calendar invite sent to {booking.guest_email}. Please check for the correct time in your timezone.")
         return "\n".join(lines)

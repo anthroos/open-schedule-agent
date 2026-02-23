@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 class ConversationState(str, Enum):
@@ -71,6 +72,13 @@ class TimeSlot:
         end_time = self.end.strftime("%H:%M")
         return f"{day} {start_time}-{end_time}"
 
+    def format_in_tz(self, tz: ZoneInfo) -> str:
+        """Format the slot converted to the given timezone."""
+        start_local = self.start.astimezone(tz)
+        end_local = self.end.astimezone(tz)
+        day = start_local.strftime("%A, %B %d")
+        return f"{day} {start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')}"
+
 
 @dataclass
 class Booking:
@@ -100,6 +108,7 @@ class Conversation:
     guest_name: str = ""
     guest_email: str = ""
     guest_topic: str = ""
+    guest_timezone: str = ""  # IANA timezone e.g. "Europe/Kyiv"
     attendee_emails: list[str] = field(default_factory=list)
     selected_slot: TimeSlot | None = None
     messages: list[dict[str, str]] = field(default_factory=list)

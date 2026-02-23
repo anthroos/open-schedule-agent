@@ -67,7 +67,11 @@ def get_google_credentials(
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             logger.info("Refreshing expired Google token")
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as exc:
+                logger.error("Google token refresh failed: %s", exc)
+                raise
             # Save refreshed token back to file if possible
             _save_token(creds, token_path)
         else:
