@@ -6,7 +6,6 @@ import logging
 import re
 import secrets
 import time
-import uuid
 from datetime import datetime
 
 from ..calendar.base import CalendarProvider

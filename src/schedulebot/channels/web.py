@@ -56,6 +56,8 @@ class WebAdapter(ChannelAdapter):
                 "fastapi/uvicorn not installed. Run: pip install schedulebot[web]"
             )
 
+        adapter = self
+
         app = FastAPI(title="schedulebot", version="0.1.0")
         origins = adapter.allowed_origins or []
         app.add_middleware(
@@ -64,8 +66,6 @@ class WebAdapter(ChannelAdapter):
             allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Authorization", "Content-Type"],
         )
-
-        adapter = self
 
         # --- Auth helper (extracts header from Request object) ---
         def check_api_key(request: Request):
