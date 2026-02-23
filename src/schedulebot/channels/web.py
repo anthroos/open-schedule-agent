@@ -29,6 +29,8 @@ class WebAdapter(ChannelAdapter):
         mcp_app=None,
         mcp_path: str = "/mcp",
         owner_name: str = "Owner",
+        owner_email: str = "",
+        agent_card=None,
     ):
         super().__init__(config, on_message)
         self.host = config.get("host", "0.0.0.0")
@@ -39,6 +41,8 @@ class WebAdapter(ChannelAdapter):
         self.mcp_app = mcp_app
         self.mcp_path = mcp_path
         self.owner_name = owner_name
+        self.owner_email = owner_email
+        self.agent_card = agent_card
         self._server = None
 
     @property
@@ -190,18 +194,58 @@ class WebAdapter(ChannelAdapter):
             app.mount(adapter.mcp_path, adapter.mcp_app)
             logger.info(f"MCP server mounted at {adapter.mcp_path}")
 
-        # --- MCP Discovery ---
+        # --- Discovery ---
         @app.get("/.well-known/mcp.json")
         async def mcp_discovery():
+            base_url = adapter.agent_card.url if adapter.agent_card and adapter.agent_card.url else f"http://{adapter.host}:{adapter.port}"
             return {
                 "mcpServers": {
                     "schedulebot": {
-                        "url": f"http://{adapter.host}:{adapter.port}{adapter.mcp_path}",
+                        "url": f"{base_url}{adapter.mcp_path}",
                         "description": f"Schedule meetings with {adapter.owner_name}",
                         "transport": "streamable-http",
                     }
                 }
             }
+
+        @app.get("/.well-known/agent.json")
+        async def agent_discovery():
+            """Agent identity card for agent-to-agent discovery."""
+            card = adapter.agent_card
+            base_url = card.url if card and card.url else f"http://{adapter.host}:{adapter.port}"
+
+            result = {
+                "schema_version": "0.1",
+                "name": adapter.owner_name,
+                "description": card.description if card and card.description else f"Scheduling agent for {adapter.owner_name}",
+                "capabilities": {
+                    "scheduling": {
+                        "protocol": "mcp",
+                        "url": f"{base_url}{adapter.mcp_path}",
+                        "transport": "streamable-http",
+                        "tools": [
+                            "get_services",
+                            "get_available_slots",
+                            "get_pricing",
+                            "book_consultation",
+                            "cancel_booking",
+                        ],
+                        "description": f"Book a meeting with {adapter.owner_name}. "
+                            "Use get_available_slots() to see open times, "
+                            "then book_consultation() to book.",
+                    }
+                },
+                "contact": {},
+            }
+
+            if adapter.owner_email:
+                result["contact"]["email"] = adapter.owner_email
+            if card and card.organization:
+                result["contact"]["organization"] = card.organization
+            if card and card.url:
+                result["url"] = card.url
+
+            return result
 
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)

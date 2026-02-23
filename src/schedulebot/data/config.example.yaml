@@ -57,3 +57,11 @@ channels:
 notifications:
   channel: "telegram"
   owner_id: "${OWNER_TELEGRAM_ID}"
+
+# Agent discovery card — lets other AI agents find and book meetings with you
+# Other agents discover you via: GET https://yourdomain.com/.well-known/agent.json
+agent_card:
+  enabled: false
+  url: ""  # Your public URL, e.g. "https://schedule.yourdomain.com"
+  description: ""  # e.g. "AI/ML engineer, available for consulting"
+  organization: ""  # e.g. "Your Company"

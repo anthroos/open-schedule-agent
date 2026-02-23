@@ -80,6 +80,15 @@ class MCPConfig:
 
 
 @dataclass
+class AgentCardConfig:
+    """Public agent identity for /.well-known/agent.json discovery."""
+    enabled: bool = False
+    url: str = ""  # Public base URL, e.g. "https://schedule.example.com"
+    description: str = ""
+    organization: str = ""
+
+
+@dataclass
 class Config:
     owner: OwnerConfig = field(default_factory=OwnerConfig)
     availability: AvailabilityConfig = field(default_factory=AvailabilityConfig)
@@ -90,6 +99,7 @@ class Config:
     booking_links: BookingLinksConfig = field(default_factory=BookingLinksConfig)
     services: list[ServiceConfig] = field(default_factory=list)
     mcp: MCPConfig = field(default_factory=MCPConfig)
+    agent_card: AgentCardConfig = field(default_factory=AgentCardConfig)
     dry_run: bool = False
 
 
@@ -205,6 +215,14 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         path=mcp_data.get("path", "/mcp"),
     )
 
+    agent_data = raw.get("agent_card", {})
+    agent_card = AgentCardConfig(
+        enabled=agent_data.get("enabled", False),
+        url=agent_data.get("url", ""),
+        description=agent_data.get("description", ""),
+        organization=agent_data.get("organization", ""),
+    )
+
     dry_run = os.environ.get("DRY_RUN", "").lower() in ("true", "1", "yes")
 
     return Config(
@@ -217,5 +235,6 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         booking_links=booking_links,
         services=services,
         mcp=mcp,
+        agent_card=agent_card,
         dry_run=dry_run,
     )

@@ -229,6 +229,8 @@ async def _run_bot(config) -> None:
             name, ch_config.extra, engine.handle_message, db,
             mcp_app=mcp_app, mcp_path=config.mcp.path,
             owner_name=config.owner.name,
+            owner_email=config.owner.email,
+            agent_card=config.agent_card,
         )
         if adapter:
             adapters.append(adapter)
@@ -311,14 +313,14 @@ def _build_llm(config):
         raise ValueError(f"Unknown LLM provider: {provider}")
 
 
-def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp", owner_name="Owner"):
+def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp", owner_name="Owner", owner_email="", agent_card=None):
     """Build channel adapter by name."""
     if name == "telegram":
         from .channels.telegram import TelegramAdapter
         return TelegramAdapter(config_extra, on_message)
     elif name == "web":
         from .channels.web import WebAdapter
-        return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path, owner_name=owner_name)
+        return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path, owner_name=owner_name, owner_email=owner_email, agent_card=agent_card)
     elif name == "slack":
         from .channels.slack import SlackAdapter
         return SlackAdapter(config_extra, on_message)
