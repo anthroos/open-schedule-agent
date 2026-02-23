@@ -65,6 +65,13 @@ dev = [
 [project.scripts]
 schedulebot = "schedulebot.cli:main"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/schedulebot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/schedulebot/data/config.example.yaml" = "schedulebot/data/config.example.yaml"
+"src/schedulebot/data/env.example" = "schedulebot/data/env.example"
+
 [project.urls]
 Homepage = "https://github.com/anthroos/open-schedule-agent"
 Repository = "https://github.com/anthroos/open-schedule-agent"

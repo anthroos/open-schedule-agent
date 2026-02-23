@@ -249,14 +249,56 @@ class SchedulingEngine:
         )
         return clean_text.strip()
 
+    @staticmethod
+    def _validate_time(value: str) -> str | None:
+        """Validate HH:MM format. Returns normalized time or None."""
+        if not value:
+            return value
+        m = re.match(r"^(\d{1,2}):(\d{2})$", value.strip())
+        if not m:
+            return None
+        h, mi = int(m.group(1)), int(m.group(2))
+        if h > 23 or mi > 59:
+            return None
+        return f"{h:02d}:{mi:02d}"
+
+    def _validate_rule_params(self, params: dict) -> str | None:
+        """Validate add_rule/block_time params. Returns error string or None."""
+        day = params.get("day", "")
+        date = params.get("date", "")
+        start = params.get("start", "")
+        end = params.get("end", "")
+        if not day and not date:
+            return "Missing day or date."
+        if day and day.lower() not in (
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+        ):
+            return f"Invalid day: {day}. Use full English day name (monday-sunday)."
+        if date:
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                return f"Invalid date format: {date}. Use YYYY-MM-DD."
+        if start and self._validate_time(start) is None:
+            return f"Invalid start time: {start}. Use HH:MM (24h)."
+        if end and self._validate_time(end) is None:
+            return f"Invalid end time: {end}. Use HH:MM (24h)."
+        if start and end:
+            if self._validate_time(start) >= self._validate_time(end):
+                return f"Start time {start} must be before end time {end}."
+        return None
+
     def _execute_tool(self, name: str, params: dict) -> str:
         """Execute a single owner tool call. Returns result text."""
         if name == "add_rule":
+            err = self._validate_rule_params(params)
+            if err:
+                return f"Invalid rule: {err}"
             rule = AvailabilityRule(
-                day_of_week=params.get("day", ""),
+                day_of_week=params.get("day", "").lower(),
                 specific_date=params.get("date", ""),
-                start_time=params.get("start", ""),
-                end_time=params.get("end", ""),
+                start_time=self._validate_time(params.get("start", "")) or "",
+                end_time=self._validate_time(params.get("end", "")) or "",
                 is_blocked=False,
             )
             rule_id = self.db.add_availability_rule(rule)
@@ -264,11 +306,14 @@ class SchedulingEngine:
             return f"Added availability rule #{rule_id}: {target} {rule.start_time}-{rule.end_time}"
 
         if name == "block_time":
+            err = self._validate_rule_params(params)
+            if err:
+                return f"Invalid rule: {err}"
             rule = AvailabilityRule(
-                day_of_week=params.get("day", ""),
+                day_of_week=params.get("day", "").lower(),
                 specific_date=params.get("date", ""),
-                start_time=params.get("start", ""),
-                end_time=params.get("end", ""),
+                start_time=self._validate_time(params.get("start", "")) or "",
+                end_time=self._validate_time(params.get("end", "")) or "",
                 is_blocked=True,
             )
             rule_id = self.db.add_availability_rule(rule)

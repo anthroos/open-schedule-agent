@@ -33,29 +33,22 @@ def cmd_init(args: argparse.Namespace) -> None:
         print("config.yaml already exists. Use --force to overwrite.")
     else:
         content = _read_package_data("config.example.yaml")
-        if content:
-            config_dest.write_text(content)
-        else:
-            config_dest.write_text(
-                "owner:\n  name: \"Your Name\"\n  email: \"you@example.com\"\n\n"
-                "availability:\n  timezone: \"UTC\"\n  meeting_duration_minutes: 30\n\n"
-                "calendar:\n  provider: \"google\"\n\nllm:\n  provider: \"anthropic\"\n\n"
-                "channels:\n  telegram:\n    enabled: true\n"
-                "    bot_token: \"${TELEGRAM_BOT_TOKEN}\"\n"
-            )
+        if not content:
+            print("[FAIL] Could not read config.example.yaml from package data.")
+            print("       Try reinstalling: pip install -e '.[telegram]'")
+            sys.exit(1)
+        config_dest.write_text(content)
         print(f"Created {config_dest}")
 
     if env_dest.exists() and not args.force:
         print(".env already exists. Use --force to overwrite.")
     else:
         content = _read_package_data("env.example")
-        if content:
-            env_dest.write_text(content)
-        else:
-            env_dest.write_text(
-                "# LLM API key\nANTHROPIC_API_KEY=sk-ant-...\n\n"
-                "# Telegram\nTELEGRAM_BOT_TOKEN=...\nOWNER_TELEGRAM_ID=...\n"
-            )
+        if not content:
+            print("[FAIL] Could not read env.example from package data.")
+            print("       Try reinstalling: pip install -e '.[telegram]'")
+            sys.exit(1)
+        env_dest.write_text(content)
         print(f"Created {env_dest}")
 
     print("\nNext steps:")
@@ -79,6 +72,12 @@ def cmd_check(args: argparse.Namespace) -> None:
         print(f"[FAIL] Config: {e}")
         sys.exit(1)
 
+    # Check owner basics
+    if config.owner.name in ("Owner", "Your Name", ""):
+        print("[WARN] owner.name is not set in config.yaml")
+    if not config.owner.email or config.owner.email == "you@example.com":
+        print("[WARN] owner.email is not set — calendar invites will lack organizer info")
+
     # Check calendar
     try:
         from .calendar.google_auth import get_google_credentials
@@ -96,6 +95,21 @@ def cmd_check(args: argparse.Namespace) -> None:
         print(f"[OK] LLM provider: {config.llm.provider} ({config.llm.model})")
     except Exception as e:
         print(f"[FAIL] LLM: {e}")
+
+    # Check availability rules
+    try:
+        from .database import Database
+        check_db = Database()
+        check_db.connect()
+        rules = check_db.get_availability_rules()
+        if rules:
+            print(f"[OK] Availability: {len(rules)} rule(s) configured")
+        else:
+            print("[WARN] No availability rules set. Guests won't see any slots.")
+            print("       After 'schedulebot run', message the bot as owner to set your schedule.")
+        check_db.close()
+    except Exception as e:
+        print(f"[WARN] Could not check availability rules: {e}")
 
     # Check channels
     for name, ch_config in config.channels.items():
@@ -248,6 +262,15 @@ async def _run_bot(config) -> None:
     if not adapters:
         logger.error("No channels enabled. Enable at least one channel in config.yaml.")
         sys.exit(1)
+
+    # Warn if no availability rules set
+    rules = db.get_availability_rules()
+    if not rules:
+        logger.warning(
+            "No availability rules set. Guests won't see any slots. "
+            "Message the bot as owner to set your schedule, e.g. "
+            "\"I'm available Monday-Friday 10:00-18:00\""
+        )
 
     logger.info("Starting %d channel(s): %s", len(adapters), ", ".join(a.name for a in adapters))
 

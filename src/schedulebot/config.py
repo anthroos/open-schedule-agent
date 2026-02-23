@@ -166,11 +166,18 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     )
 
     cal_data = raw.get("calendar", {})
+    creds_path = cal_data.get("credentials_path", "credentials.json")
+    tok_path = cal_data.get("token_path", "token.json")
+    # Resolve relative paths against config file directory
+    if not Path(creds_path).is_absolute():
+        creds_path = str(config_dir / creds_path)
+    if not Path(tok_path).is_absolute():
+        tok_path = str(config_dir / tok_path)
     calendar = CalendarConfig(
         provider=cal_data.get("provider", "google"),
         create_meet_link=cal_data.get("create_meet_link", True),
-        credentials_path=cal_data.get("credentials_path", "credentials.json"),
-        token_path=cal_data.get("token_path", "token.json"),
+        credentials_path=creds_path,
+        token_path=tok_path,
     )
 
     llm_data = raw.get("llm", {})

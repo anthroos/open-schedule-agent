@@ -41,6 +41,12 @@ class TelegramAdapter(ChannelAdapter):
                 "python-telegram-bot not installed. Run: pip install schedulebot[telegram]"
             )
 
+        if not self.bot_token or self.bot_token.startswith("$") or self.bot_token == "123456:ABC-DEF...":
+            raise ValueError(
+                "Telegram bot_token is not configured. "
+                "Get a token from @BotFather and set TELEGRAM_BOT_TOKEN in .env"
+            )
+
         logger.info("Building Telegram app")
         self._app = Application.builder().token(self.bot_token).build()
 
