@@ -1,0 +1,35 @@
+name: Security Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Perform a security-focused code review on this PR.
+
+            Check for:
+            - SQL injection (we use SQLite with parameterized queries — verify)
+            - Prompt injection (LLM input from untrusted users)
+            - Authentication/authorization flaws (owner vs guest mode)
+            - CORS and API security (FastAPI web adapter)
+            - Secrets or credentials in code/logs
+            - Input validation gaps (email, sender_id, message length)
+            - Race conditions (double booking)
+            - OWASP Top 10 vulnerabilities
+
+            Context: This is an AI scheduling bot. Guests chat with an LLM to book
+            meetings on the owner's Google Calendar. Channels: Telegram, Slack,
+            Discord, Web API, MCP server.
+
+            Only flag real issues — no style nits or false positives.
