@@ -458,13 +458,30 @@ class SchedulingEngine:
 
                 # Check if a booking was created by confirm_booking
                 if tc.name == "confirm_booking" and conv.state == ConversationState.CONFIRMATION:
-                    booking = await self._create_booking(conv)
-                    if booking:
-                        confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
-                        conv.state = ConversationState.BOOKED
-                        tool_output = f"Booking confirmed: {confirmation}"
+                    # Race condition guard: check if slot is already booked
+                    if conv.selected_slot and self.db.is_slot_booked(
+                        conv.selected_slot.start, conv.selected_slot.end
+                    ):
+                        conv.state = ConversationState.COLLECTING_INFO
+                        conv.selected_slot = None
+                        tool_output = (
+                            "Sorry, this slot was just booked by someone else. "
+                            "Please pick a different slot."
+                        )
                     else:
-                        tool_output = "Failed to create booking. Calendar may be unavailable."
+                        booking = await self._create_booking(conv)
+                        if booking:
+                            confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
+                            conv.state = ConversationState.BOOKED
+                            tool_output = f"Booking confirmed: {confirmation}"
+                        else:
+                            # Reset state so guest can retry without /cancel
+                            conv.state = ConversationState.COLLECTING_INFO
+                            conv.selected_slot = None
+                            tool_output = (
+                                "Failed to create booking. Calendar may be unavailable. "
+                                "Please try picking a slot again."
+                            )
 
                 tool_result_content.append({
                     "type": "tool_result",
@@ -580,6 +597,14 @@ class SchedulingEngine:
         action = self._parse_booking_action(response_text, slots, conv)
 
         if action == "book" and conv.selected_slot:
+            # Race condition guard
+            if self.db.is_slot_booked(conv.selected_slot.start, conv.selected_slot.end):
+                conv.state = ConversationState.COLLECTING_INFO
+                conv.selected_slot = None
+                msg = "Sorry, this slot was just booked by someone else. Please pick a different slot."
+                conv.add_message("assistant", msg)
+                return OutgoingMessage(text=msg)
+
             booking = await self._create_booking(conv)
             if booking:
                 confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
@@ -589,6 +614,10 @@ class SchedulingEngine:
                     text=confirmation,
                     metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
                 )
+            else:
+                # Reset state so guest can retry
+                conv.state = ConversationState.COLLECTING_INFO
+                conv.selected_slot = None
 
         conv.add_message("assistant", response_text)
         clean_text = re.sub(r"\s*\[BOOK:\S+\]", "", response_text)

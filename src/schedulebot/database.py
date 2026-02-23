@@ -215,6 +215,15 @@ class Database:
             for row in rows
         ]
 
+    def is_slot_booked(self, start: datetime, end: datetime) -> bool:
+        """Check if a time slot overlaps with any existing booking."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM bookings
+            WHERE slot_start < ? AND slot_end > ?""",
+            (end.isoformat(), start.isoformat()),
+        ).fetchone()
+        return row["cnt"] > 0
+
     # --- Availability Rules ---
 
     def get_availability_rules(self) -> list[AvailabilityRule]:

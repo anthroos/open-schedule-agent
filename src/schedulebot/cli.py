@@ -105,6 +105,10 @@ def cmd_check(args: argparse.Namespace) -> None:
                 print(f"[OK] Channel {name}: token configured")
             else:
                 print(f"[WARN] Channel {name}: enabled but token not set")
+            # Check owner ID
+            owner_id = config.owner.owner_ids.get(name, "")
+            if not owner_id or owner_id.startswith("$"):
+                print(f"[WARN] Channel {name}: owner_id not set — you won't be recognized as owner")
         else:
             print(f"[--] Channel {name}: disabled")
 
@@ -192,6 +196,18 @@ async def _run_bot(config) -> None:
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
     llm = _build_llm(config)
     engine = SchedulingEngine(config, calendar, llm, db)
+
+    # Warn if no owner IDs configured for enabled channels
+    enabled_channels = [n for n, c in config.channels.items() if c.enabled]
+    for ch in enabled_channels:
+        owner_id = config.owner.owner_ids.get(ch, "")
+        if not owner_id or owner_id.startswith("$"):
+            logger.warning(
+                "No owner_id configured for channel '%s'. "
+                "You won't be able to manage your schedule via %s. "
+                "Set owner.owner_ids.%s in config.yaml.",
+                ch, ch, ch,
+            )
 
     # Create MCP server if enabled
     mcp_app = None
