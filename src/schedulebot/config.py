@@ -157,8 +157,14 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     )
 
     avail_data = raw.get("availability", {})
+    tz_name = avail_data.get("timezone", "UTC")
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(tz_name)
+    except (KeyError, Exception) as e:
+        raise ValueError(f"Invalid timezone '{tz_name}' in config. Use IANA format, e.g. 'Europe/Kyiv'.") from e
     availability = AvailabilityConfig(
-        timezone=avail_data.get("timezone", "UTC"),
+        timezone=tz_name,
         meeting_duration_minutes=avail_data.get("meeting_duration_minutes", 30),
         buffer_minutes=avail_data.get("buffer_minutes", 15),
         min_notice_hours=avail_data.get("min_notice_hours", 4),

@@ -103,7 +103,9 @@ def _save_token(creds: Credentials, token_path: str) -> None:
         "scopes": list(creds.scopes or SCOPES),
     }
     try:
-        Path(token_path).write_text(json.dumps(token_data, indent=2))
+        p = Path(token_path)
+        p.write_text(json.dumps(token_data, indent=2))
+        p.chmod(0o600)
         logger.info(f"Token saved to {token_path}")
     except OSError:
         logger.warning(f"Could not save token to {token_path}")

@@ -13,8 +13,10 @@ logger = logging.getLogger(__name__)
 
 # Web endpoint rate limiter: IP -> list of timestamps
 _web_rate_limiter: dict[str, list[float]] = {}
+_web_rate_limiter_cleanup_counter = 0
 WEB_RATE_LIMIT = 20  # max requests per window
 WEB_RATE_WINDOW = 60  # seconds
+WEB_RATE_LIMITER_MAX_KEYS = 10000
 MAX_SENDER_ID_LENGTH = 64
 
 
@@ -73,13 +75,18 @@ class WebAdapter(ChannelAdapter):
 
         # --- Auth helper (extracts header from Request object) ---
         def check_api_key(request: Request):
-            if adapter.api_key:
-                auth = request.headers.get("authorization", "")
-                if not auth or auth.replace("Bearer ", "") != adapter.api_key:
-                    raise HTTPException(status_code=401, detail="Invalid API key")
+            if not adapter.api_key:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Schedule API disabled. Set SCHEDULEBOT_API_KEY to enable.",
+                )
+            auth = request.headers.get("authorization", "")
+            if not auth or auth.replace("Bearer ", "") != adapter.api_key:
+                raise HTTPException(status_code=401, detail="Invalid API key")
 
         def check_rate_limit(request: Request):
             """Per-IP rate limiting for public endpoints."""
+            global _web_rate_limiter_cleanup_counter
             client_ip = request.client.host if request.client else "unknown"
             now = time.time()
             history = _web_rate_limiter.get(client_ip, [])
@@ -88,6 +95,18 @@ class WebAdapter(ChannelAdapter):
                 raise HTTPException(status_code=429, detail="Too many requests. Please wait.")
             history.append(now)
             _web_rate_limiter[client_ip] = history
+            # Periodic cleanup: evict stale entries to prevent memory leak
+            _web_rate_limiter_cleanup_counter += 1
+            if _web_rate_limiter_cleanup_counter >= 100:
+                _web_rate_limiter_cleanup_counter = 0
+                stale = [k for k, v in _web_rate_limiter.items() if not v or now - v[-1] > WEB_RATE_WINDOW]
+                for k in stale:
+                    del _web_rate_limiter[k]
+                # Hard cap: if still too large, drop oldest entries
+                if len(_web_rate_limiter) > WEB_RATE_LIMITER_MAX_KEYS:
+                    excess = len(_web_rate_limiter) - WEB_RATE_LIMITER_MAX_KEYS
+                    for k in list(_web_rate_limiter)[:excess]:
+                        del _web_rate_limiter[k]
 
         # --- Guest messaging ---
 

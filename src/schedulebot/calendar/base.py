@@ -28,3 +28,7 @@ class CalendarProvider(ABC):
     ) -> dict:
         """Create a calendar event. Returns dict with 'event_id' and optionally 'meet_link'."""
         ...
+
+    async def delete_event(self, event_id: str) -> None:
+        """Delete a calendar event by ID. Optional — not all providers support this."""
+        raise NotImplementedError("delete_event not supported by this calendar provider")

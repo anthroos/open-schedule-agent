@@ -49,6 +49,8 @@ INJECTION_PATTERNS = [
 
 # In-memory rate limiter: sender_id -> list of timestamps
 _rate_limiter: dict[str, list[float]] = {}
+_rate_limiter_cleanup_counter = 0
+_RATE_LIMITER_MAX_KEYS = 10000
 
 
 class SchedulingEngine:
@@ -105,6 +107,7 @@ class SchedulingEngine:
             return f"Please keep your message under {MAX_MESSAGE_LENGTH} characters."
 
         # Rate limit
+        global _rate_limiter_cleanup_counter
         now = time.time()
         history = _rate_limiter.get(msg.sender_id, [])
         history = [t for t in history if now - t < RATE_LIMIT_WINDOW]
@@ -112,6 +115,16 @@ class SchedulingEngine:
             return "You're sending messages too fast. Please wait a minute."
         history.append(now)
         _rate_limiter[msg.sender_id] = history
+        # Periodic cleanup to prevent memory leak
+        _rate_limiter_cleanup_counter += 1
+        if _rate_limiter_cleanup_counter >= 100:
+            _rate_limiter_cleanup_counter = 0
+            stale = [k for k, v in _rate_limiter.items() if not v or now - v[-1] > RATE_LIMIT_WINDOW]
+            for k in stale:
+                del _rate_limiter[k]
+            if len(_rate_limiter) > _RATE_LIMITER_MAX_KEYS:
+                for k in list(_rate_limiter)[:len(_rate_limiter) - _RATE_LIMITER_MAX_KEYS]:
+                    del _rate_limiter[k]
 
         # Prompt injection
         for pattern in INJECTION_PATTERNS:
@@ -503,30 +516,31 @@ class SchedulingEngine:
 
                 # Check if a booking was created by confirm_booking
                 if tc.name == "confirm_booking" and conv.state == ConversationState.CONFIRMATION:
-                    # Race condition guard: check if slot is already booked
-                    if conv.selected_slot and self.db.is_slot_booked(
-                        conv.selected_slot.start, conv.selected_slot.end
+                    # Atomic slot reservation to prevent double-booking
+                    reservation_id = secrets.token_urlsafe(16)
+                    if conv.selected_slot and self.db.reserve_slot(
+                        conv.selected_slot.start, conv.selected_slot.end, reservation_id
                     ):
-                        conv.state = ConversationState.COLLECTING_INFO
-                        conv.selected_slot = None
-                        tool_output = (
-                            "Sorry, this slot was just booked by someone else. "
-                            "Please pick a different slot."
-                        )
-                    else:
-                        booking = await self._create_booking(conv)
+                        booking = await self._create_booking(conv, reservation_id=reservation_id)
                         if booking:
                             confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
                             conv.state = ConversationState.BOOKED
                             tool_output = f"Booking confirmed: {confirmation}"
                         else:
-                            # Reset state so guest can retry without /cancel
+                            self.db.release_slot(reservation_id)
                             conv.state = ConversationState.COLLECTING_INFO
                             conv.selected_slot = None
                             tool_output = (
                                 "Failed to create booking. Calendar may be unavailable. "
                                 "Please try picking a slot again."
                             )
+                    else:
+                        conv.state = ConversationState.COLLECTING_INFO
+                        conv.selected_slot = None
+                        tool_output = (
+                            "Sorry, this slot was just booked by someone else. "
+                            "Please pick a different slot."
+                        )
 
                 tool_result_content.append({
                     "type": "tool_result",
@@ -642,15 +656,16 @@ class SchedulingEngine:
         action = self._parse_booking_action(response_text, slots, conv)
 
         if action == "book" and conv.selected_slot:
-            # Race condition guard
-            if self.db.is_slot_booked(conv.selected_slot.start, conv.selected_slot.end):
+            # Atomic slot reservation to prevent double-booking
+            reservation_id = secrets.token_urlsafe(16)
+            if not self.db.reserve_slot(conv.selected_slot.start, conv.selected_slot.end, reservation_id):
                 conv.state = ConversationState.COLLECTING_INFO
                 conv.selected_slot = None
                 msg = "Sorry, this slot was just booked by someone else. Please pick a different slot."
                 conv.add_message("assistant", msg)
                 return OutgoingMessage(text=msg)
 
-            booking = await self._create_booking(conv)
+            booking = await self._create_booking(conv, reservation_id=reservation_id)
             if booking:
                 confirmation = self._format_confirmation(booking, guest_timezone=conv.guest_timezone)
                 conv.state = ConversationState.BOOKED
@@ -660,7 +675,8 @@ class SchedulingEngine:
                     metadata={"booking_id": booking.id, "meet_link": booking.meet_link},
                 )
             else:
-                # Reset state so guest can retry
+                # Release reservation and reset state so guest can retry
+                self.db.release_slot(reservation_id)
                 conv.state = ConversationState.COLLECTING_INFO
                 conv.selected_slot = None
 
@@ -697,8 +713,12 @@ class SchedulingEngine:
 
         return None
 
-    async def _create_booking(self, conv: Conversation) -> Booking | None:
-        """Create a calendar event and booking record."""
+    async def _create_booking(self, conv: Conversation, reservation_id: str | None = None) -> Booking | None:
+        """Create a calendar event and booking record.
+
+        If reservation_id is provided, finalizes an existing DB reservation
+        instead of creating a new row (prevents race conditions).
+        """
         if not conv.selected_slot:
             return None
 
@@ -719,9 +739,11 @@ class SchedulingEngine:
             all_attendee_emails.append(conv.guest_email)
         all_attendee_emails.extend(conv.attendee_emails)
 
+        booking_id = reservation_id or secrets.token_urlsafe(16)
+
         if self.config.dry_run:
             booking = Booking(
-                id=secrets.token_urlsafe(16),
+                id=booking_id,
                 guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,
@@ -732,7 +754,10 @@ class SchedulingEngine:
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
             )
-            self.db.save_booking(booking)
+            if reservation_id:
+                self.db.finalize_booking(booking)
+            else:
+                self.db.save_booking(booking)
             await self._notify_owner(booking)
             return booking
 
@@ -747,7 +772,7 @@ class SchedulingEngine:
             )
 
             booking = Booking(
-                id=secrets.token_urlsafe(16),
+                id=booking_id,
                 guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,
@@ -758,7 +783,10 @@ class SchedulingEngine:
                 calendar_event_id=event.get("event_id"),
                 meet_link=event.get("meet_link"),
             )
-            self.db.save_booking(booking)
+            if reservation_id:
+                self.db.finalize_booking(booking)
+            else:
+                self.db.save_booking(booking)
             await self._notify_owner(booking)
             return booking
 

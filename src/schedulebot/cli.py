@@ -64,6 +64,7 @@ def cmd_check(args: argparse.Namespace) -> None:
     from .config import load_config
 
     print(f"schedulebot v{__version__} — connection check\n")
+    errors = []
 
     try:
         config = load_config(args.config)
@@ -88,6 +89,7 @@ def cmd_check(args: argparse.Namespace) -> None:
         print(f"[OK] Google Calendar authenticated")
     except Exception as e:
         print(f"[FAIL] Google Calendar: {e}")
+        errors.append("Google Calendar")
 
     # Check LLM
     try:
@@ -95,6 +97,7 @@ def cmd_check(args: argparse.Namespace) -> None:
         print(f"[OK] LLM provider: {config.llm.provider} ({config.llm.model})")
     except Exception as e:
         print(f"[FAIL] LLM: {e}")
+        errors.append("LLM")
 
     # Check availability rules
     try:
@@ -125,6 +128,11 @@ def cmd_check(args: argparse.Namespace) -> None:
                 print(f"[WARN] Channel {name}: owner_id not set — you won't be recognized as owner")
         else:
             print(f"[--] Channel {name}: disabled")
+
+    if errors:
+        print(f"\n[FAIL] {len(errors)} critical check(s) failed: {', '.join(errors)}")
+        print("       Fix these before running 'schedulebot run'.")
+        sys.exit(1)
 
 
 def cmd_slots(args: argparse.Namespace) -> None:
@@ -258,6 +266,12 @@ async def _run_bot(config) -> None:
             from .notifications import Notifier
             engine.notifier = Notifier(notif_adapter, notif_owner_id)
             logger.info("Owner notifications enabled via %s -> %s", notif_channel, notif_owner_id)
+        else:
+            logger.warning(
+                "Notifications configured for '%s' but that channel is not enabled. "
+                "You won't receive booking alerts. Enable '%s' channel or change notifications.channel.",
+                notif_channel, notif_channel,
+            )
 
     if not adapters:
         logger.error("No channels enabled. Enable at least one channel in config.yaml.")

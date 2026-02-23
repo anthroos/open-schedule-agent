@@ -190,6 +190,58 @@ class Database:
         )
         self.conn.commit()
 
+    def reserve_slot(self, start: datetime, end: datetime, booking_id: str) -> bool:
+        """Atomically check + reserve a slot. Returns True if reserved, False if already taken."""
+        try:
+            self.conn.execute("BEGIN EXCLUSIVE")
+            row = self.conn.execute(
+                "SELECT COUNT(*) as cnt FROM bookings WHERE slot_start < ? AND slot_end > ?",
+                (end.isoformat(), start.isoformat()),
+            ).fetchone()
+            if row["cnt"] > 0:
+                self.conn.execute("ROLLBACK")
+                return False
+            # Insert placeholder booking to hold the slot
+            self.conn.execute(
+                "INSERT INTO bookings (id, guest_name, guest_channel, guest_sender_id, "
+                "slot_start, slot_end, created_at) VALUES (?, '', '', '', ?, ?, ?)",
+                (booking_id, start.isoformat(), end.isoformat(), datetime.now().isoformat()),
+            )
+            self.conn.execute("COMMIT")
+            return True
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return False
+
+    def finalize_booking(self, booking: Booking) -> None:
+        """Update a reserved (placeholder) booking with full details."""
+        self.conn.execute(
+            """UPDATE bookings SET guest_name=?, guest_channel=?, guest_sender_id=?,
+            guest_email=?, topic=?, attendee_emails=?, calendar_event_id=?,
+            meet_link=?, notes=? WHERE id=?""",
+            (
+                booking.guest_name,
+                booking.guest_channel,
+                booking.guest_sender_id,
+                booking.guest_email,
+                booking.topic,
+                json.dumps(booking.attendee_emails),
+                booking.calendar_event_id,
+                booking.meet_link,
+                booking.notes,
+                booking.id,
+            ),
+        )
+        self.conn.commit()
+
+    def release_slot(self, booking_id: str) -> None:
+        """Remove a reserved slot (e.g., if calendar creation failed)."""
+        self.conn.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+        self.conn.commit()
+
     def get_bookings(self, limit: int = 50) -> list[Booking]:
         rows = self.conn.execute(
             "SELECT * FROM bookings ORDER BY slot_start DESC LIMIT ?", (limit,)
@@ -214,6 +266,11 @@ class Database:
             )
             for row in rows
         ]
+
+    def delete_booking(self, booking_id: str) -> bool:
+        cursor = self.conn.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def is_slot_booked(self, start: datetime, end: datetime) -> bool:
         """Check if a time slot overlaps with any existing booking."""

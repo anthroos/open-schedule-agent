@@ -187,7 +187,7 @@ def create_mcp_server(
             )
         except Exception as e:
             logger.error(f"Failed to create calendar event via MCP: {e}")
-            return {"error": f"Failed to create calendar event: {str(e)}"}
+            return {"error": "Failed to create calendar event. Please try again."}
 
         booking = Booking(
             id=secrets.token_urlsafe(16),
@@ -215,7 +215,7 @@ def create_mcp_server(
 
     @mcp.tool()
     async def cancel_booking(booking_id: str) -> dict:
-        """Cancel a booking by its ID.
+        """Cancel a booking by its ID. Removes from database and attempts to delete the calendar event.
 
         Args:
             booking_id: The booking ID returned from book_consultation.
@@ -225,11 +225,23 @@ def create_mcp_server(
         if not booking:
             return {"error": f"Booking not found: {booking_id}"}
 
-        return {
+        calendar_deleted = False
+        if booking.calendar_event_id and booking.calendar_event_id != "dry-run":
+            try:
+                await calendar.delete_event(booking.calendar_event_id)
+                calendar_deleted = True
+            except Exception as e:
+                logger.warning(f"Could not delete calendar event {booking.calendar_event_id}: {e}")
+
+        db.delete_booking(booking_id)
+
+        result = {
             "status": "cancelled",
             "booking_id": booking_id,
             "was_scheduled": str(booking.slot),
-            "note": "Calendar event should be removed manually or via calendar provider.",
         }
+        if not calendar_deleted and booking.calendar_event_id and booking.calendar_event_id != "dry-run":
+            result["note"] = "Booking removed from database but calendar event could not be deleted automatically."
+        return result
 
     return mcp

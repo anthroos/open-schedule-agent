@@ -115,6 +115,11 @@ class Conversation:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
+    MAX_MESSAGES = 50
+
     def add_message(self, role: str, content: str) -> None:
         self.messages.append({"role": role, "content": content})
+        # Trim old messages to prevent unbounded growth
+        if len(self.messages) > self.MAX_MESSAGES:
+            self.messages = self.messages[-self.MAX_MESSAGES:]
         self.updated_at = datetime.now()

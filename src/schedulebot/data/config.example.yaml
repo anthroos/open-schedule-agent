@@ -2,7 +2,7 @@ owner:
   name: "Your Name"
   email: "you@example.com"
   owner_ids:
-    telegram: "${OWNER_TELEGRAM_ID}"
+    telegram: "${OWNER_TELEGRAM_ID}"  # Get your ID: send /start to @userinfobot in Telegram
     web: "owner"
 
 availability:

@@ -124,3 +124,12 @@ class GoogleCalendarProvider(CalendarProvider):
 
         logger.info(f"Created event: {created.get('htmlLink')}")
         return result
+
+    async def delete_event(self, event_id: str) -> None:
+        """Delete a Google Calendar event."""
+        from .retry import retry_async
+        await retry_async(
+            self.service.events().delete(calendarId="primary", eventId=event_id).execute,
+            label="google.delete_event",
+        )
+        logger.info(f"Deleted event: {event_id}")
