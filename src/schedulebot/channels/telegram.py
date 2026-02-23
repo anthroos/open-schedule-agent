@@ -41,7 +41,7 @@ class TelegramAdapter(ChannelAdapter):
                 "python-telegram-bot not installed. Run: pip install schedulebot[telegram]"
             )
 
-        logger.info(f"Building Telegram app with token: {self.bot_token[:10]}...")
+        logger.info("Building Telegram app")
         self._app = Application.builder().token(self.bot_token).build()
 
         async def handle_start(update: Update, context) -> None:

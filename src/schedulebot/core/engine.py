@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import time
 import uuid
 from datetime import datetime
@@ -676,7 +677,7 @@ class SchedulingEngine:
 
         if self.config.dry_run:
             booking = Booking(
-                id=str(uuid.uuid4())[:8],
+                id=secrets.token_urlsafe(16),
                 guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,
@@ -702,7 +703,7 @@ class SchedulingEngine:
             )
 
             booking = Booking(
-                id=str(uuid.uuid4())[:8],
+                id=secrets.token_urlsafe(16),
                 guest_name=guest_name,
                 guest_channel=conv.channel,
                 guest_sender_id=conv.sender_id,

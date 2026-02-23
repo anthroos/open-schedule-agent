@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
@@ -9,6 +10,12 @@ from ..models import IncomingMessage, OutgoingMessage
 from .base import ChannelAdapter
 
 logger = logging.getLogger(__name__)
+
+# Web endpoint rate limiter: IP -> list of timestamps
+_web_rate_limiter: dict[str, list[float]] = {}
+WEB_RATE_LIMIT = 20  # max requests per window
+WEB_RATE_WINDOW = 60  # seconds
+MAX_SENDER_ID_LENGTH = 64
 
 
 class WebAdapter(ChannelAdapter):
@@ -27,6 +34,7 @@ class WebAdapter(ChannelAdapter):
         self.host = config.get("host", "0.0.0.0")
         self.port = int(config.get("port", 8080))
         self.api_key = config.get("api_key", "")
+        self.allowed_origins = config.get("allowed_origins", [])
         self.db = db
         self.mcp_app = mcp_app
         self.mcp_path = mcp_path
@@ -49,11 +57,12 @@ class WebAdapter(ChannelAdapter):
             )
 
         app = FastAPI(title="schedulebot", version="0.1.0")
+        origins = adapter.allowed_origins or []
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_origins=origins,
+            allow_methods=["GET", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
         )
 
         adapter = self
@@ -64,6 +73,17 @@ class WebAdapter(ChannelAdapter):
                 auth = request.headers.get("authorization", "")
                 if not auth or auth.replace("Bearer ", "") != adapter.api_key:
                     raise HTTPException(status_code=401, detail="Invalid API key")
+
+        def check_rate_limit(request: Request):
+            """Per-IP rate limiting for public endpoints."""
+            client_ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            history = _web_rate_limiter.get(client_ip, [])
+            history = [t for t in history if now - t < WEB_RATE_WINDOW]
+            if len(history) >= WEB_RATE_LIMIT:
+                raise HTTPException(status_code=429, detail="Too many requests. Please wait.")
+            history.append(now)
+            _web_rate_limiter[client_ip] = history
 
         # --- Guest messaging ---
 
@@ -78,11 +98,15 @@ class WebAdapter(ChannelAdapter):
             meet_link: Optional[str] = None
 
         @app.post("/api/message", response_model=MessageResponse)
-        async def handle_message(req: MessageRequest):
+        async def handle_message(req: MessageRequest, request: Request):
+            check_rate_limit(request)
+            # Validate sender_id length to prevent storage abuse
+            if len(req.sender_id) > MAX_SENDER_ID_LENGTH:
+                raise HTTPException(status_code=400, detail="sender_id too long")
             msg = IncomingMessage(
                 channel="web",
                 sender_id=req.sender_id,
-                sender_name=req.sender_name,
+                sender_name=req.sender_name[:100],
                 text=req.text,
             )
             response = await adapter.on_message(msg)

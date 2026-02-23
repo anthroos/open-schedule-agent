@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -154,9 +155,13 @@ def create_mcp_server(
         if not slot_available:
             return {"error": "Requested time slot is not available. Use get_available_slots() to see open times."}
 
+        # Double-booking guard
+        if db.is_slot_booked(start, end):
+            return {"error": "This slot was just booked by someone else. Use get_available_slots() for current openings."}
+
         if config.dry_run:
             booking = Booking(
-                id=str(uuid.uuid4())[:8],
+                id=secrets.token_urlsafe(16),
                 guest_name=client_name,
                 guest_channel="mcp",
                 guest_sender_id=client_email,
@@ -186,7 +191,7 @@ def create_mcp_server(
             return {"error": f"Failed to create calendar event: {str(e)}"}
 
         booking = Booking(
-            id=str(uuid.uuid4())[:8],
+            id=secrets.token_urlsafe(16),
             guest_name=client_name,
             guest_channel="mcp",
             guest_sender_id=client_email,
