@@ -55,7 +55,10 @@ config = {
     },
     'agent_card': {
         'enabled': os.environ.get('AGENT_CARD_ENABLED', 'true').lower() in ('true', '1', 'yes'),
-        'url': os.environ.get('PUBLIC_URL', ''),
+        'url': os.environ.get('PUBLIC_URL', '') or (
+            'https://' + os.environ['RAILWAY_PUBLIC_DOMAIN']
+            if os.environ.get('RAILWAY_PUBLIC_DOMAIN') else ''
+        ),
         'description': os.environ.get('AGENT_DESCRIPTION', ''),
         'organization': os.environ.get('AGENT_ORGANIZATION', ''),
     },
