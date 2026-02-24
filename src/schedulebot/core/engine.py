@@ -37,7 +37,16 @@ MAX_MESSAGE_LENGTH = 300
 RATE_LIMIT_MESSAGES = 8
 RATE_LIMIT_WINDOW = 60  # seconds
 MAX_ATTENDEE_EMAILS = 2
-EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+MAX_NAME_LENGTH = 100
+MAX_TOPIC_LENGTH = 200
+OWNER_MAX_MESSAGE_LENGTH = 2000
+OWNER_RATE_LIMIT_MESSAGES = 30
+EMAIL_RE = re.compile(
+    r"^[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]{0,62}[a-zA-Z0-9])?@"
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
+    r"\.[a-zA-Z]{2,}$"
+)
 INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
     re.compile(r"you\s+are\s+now\s+(a|an)\s+", re.IGNORECASE),
@@ -51,6 +60,11 @@ INJECTION_PATTERNS = [
 _rate_limiter: dict[str, list[float]] = {}
 _rate_limiter_cleanup_counter = 0
 _RATE_LIMITER_MAX_KEYS = 10000
+
+
+def _sanitize_text(value: str) -> str:
+    """Strip HTML tags to prevent XSS in calendar events and notifications."""
+    return re.sub(r"<[^>]+>", "", value)
 
 
 class SchedulingEngine:
@@ -129,7 +143,7 @@ class SchedulingEngine:
         # Prompt injection
         for pattern in INJECTION_PATTERNS:
             if pattern.search(text):
-                logger.warning(f"Injection attempt from {msg.sender_id}: {text[:50]}")
+                logger.warning("Injection attempt from %s", msg.sender_id)
                 return "I can only help with scheduling meetings. How can I help you book a time?"
 
         return None
@@ -137,6 +151,8 @@ class SchedulingEngine:
     @staticmethod
     def _validate_email(email: str) -> bool:
         """Validate email format."""
+        if not email or len(email) > 254:
+            return False
         return bool(EMAIL_RE.match(email))
 
     # ──────────────────────────────────────────────
@@ -145,6 +161,20 @@ class SchedulingEngine:
 
     async def _handle_owner_message(self, msg: IncomingMessage) -> OutgoingMessage:
         """Owner is managing their schedule. Routes to tool-use or text path."""
+        # Basic input validation for owner too
+        if len(msg.text) > OWNER_MAX_MESSAGE_LENGTH:
+            return OutgoingMessage(text=f"Message too long. Max {OWNER_MAX_MESSAGE_LENGTH} chars.")
+
+        # Owner rate limiting (generous but prevents runaway)
+        now = time.time()
+        global _rate_limiter_cleanup_counter
+        history = _rate_limiter.get(msg.sender_id, [])
+        history = [t for t in history if now - t < RATE_LIMIT_WINDOW]
+        if len(history) >= OWNER_RATE_LIMIT_MESSAGES:
+            return OutgoingMessage(text="Too many messages. Please wait a moment.")
+        history.append(now)
+        _rate_limiter[msg.sender_id] = history
+
         # Quick commands without LLM
         text_lower = msg.text.strip().lower()
         if text_lower in ("/schedule", "/rules", "/show"):
@@ -365,11 +395,15 @@ class SchedulingEngine:
         # ADD_RULE:date=2026-02-20,start=10:00,end=14:00
         for match in re.finditer(r"\[ADD_RULE:([^\]]+)\]", response):
             params = self._parse_params(match.group(1))
+            err = self._validate_rule_params(params)
+            if err:
+                logger.warning(f"Skipping invalid ADD_RULE from LLM: {err}")
+                continue
             rule = AvailabilityRule(
-                day_of_week=params.get("day", ""),
+                day_of_week=params.get("day", "").lower(),
                 specific_date=params.get("date", ""),
-                start_time=params.get("start", ""),
-                end_time=params.get("end", ""),
+                start_time=self._validate_time(params.get("start", "")) or "",
+                end_time=self._validate_time(params.get("end", "")) or "",
                 is_blocked=False,
             )
             if rule.start_time and rule.end_time:
@@ -381,11 +415,15 @@ class SchedulingEngine:
         # BLOCK_RULE:day=tuesday,start=14:30,end=23:59
         for match in re.finditer(r"\[BLOCK_RULE:([^\]]+)\]", response):
             params = self._parse_params(match.group(1))
+            err = self._validate_rule_params(params)
+            if err:
+                logger.warning(f"Skipping invalid BLOCK_RULE from LLM: {err}")
+                continue
             rule = AvailabilityRule(
-                day_of_week=params.get("day", ""),
+                day_of_week=params.get("day", "").lower(),
                 specific_date=params.get("date", ""),
-                start_time=params.get("start", ""),
-                end_time=params.get("end", ""),
+                start_time=self._validate_time(params.get("start", "")) or "",
+                end_time=self._validate_time(params.get("end", "")) or "",
                 is_blocked=True,
             )
             if rule.start_time and rule.end_time:
@@ -431,16 +469,23 @@ class SchedulingEngine:
 
     async def _handle_guest_message(self, msg: IncomingMessage) -> OutgoingMessage:
         """Guest is trying to book a meeting. Routes to tool-use or text path."""
-        conv = self.db.get_conversation(msg.sender_id)
-        if not conv:
-            conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
+        text_lower = msg.text.strip().lower()
 
         # Handle /cancel command
-        if msg.text.strip().lower() in ("/cancel", "/start"):
-            if msg.text.strip().lower() == "/cancel":
-                self.db.delete_conversation(msg.sender_id)
-                return OutgoingMessage(text="Scheduling cancelled. Send a message anytime to start over.")
+        if text_lower == "/cancel":
             self.db.delete_conversation(msg.sender_id)
+            return OutgoingMessage(text="Scheduling cancelled. Send a message anytime to start over.")
+
+        # Handle /start — static greeting, no LLM call
+        if text_lower == "/start":
+            self.db.delete_conversation(msg.sender_id)
+            return OutgoingMessage(
+                text=f"Hi! I can help you schedule a meeting with {self.config.owner.name}. "
+                "Just tell me your name and what you'd like to discuss."
+            )
+
+        conv = self.db.get_conversation(msg.sender_id)
+        if not conv:
             conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
 
         conv.add_message("user", msg.text)
@@ -579,13 +624,17 @@ class SchedulingEngine:
     ) -> str:
         """Execute a guest tool call. Returns result text."""
         if name == "collect_guest_info":
-            guest_name = params.get("name", "").strip()
+            guest_name = _sanitize_text(params.get("name", "").strip())
             guest_email = params.get("email", "").strip()
-            topic = params.get("topic", "").strip()
+            topic = _sanitize_text(params.get("topic", "").strip())
             city = params.get("city", "").strip()
 
             if not guest_name:
                 return "Error: name is required."
+            if len(guest_name) > MAX_NAME_LENGTH:
+                return f"Error: name too long (max {MAX_NAME_LENGTH} characters)."
+            if len(topic) > MAX_TOPIC_LENGTH:
+                return f"Error: topic too long (max {MAX_TOPIC_LENGTH} characters)."
             if not guest_email or not self._validate_email(guest_email):
                 return f"Error: valid email is required. Got: '{guest_email}'"
 
@@ -605,7 +654,7 @@ class SchedulingEngine:
                 else:
                     tz_info = f" (could not resolve timezone for '{city}' — slots shown in owner timezone)"
 
-            logger.info(f"Guest info collected: {guest_name} <{guest_email}> topic={topic} tz={conv.guest_timezone}")
+            logger.info("Guest info collected: name=%s tz=%s", guest_name, conv.guest_timezone)
             return f"Saved: {guest_name}, {guest_email}" + (f", topic: {topic}" if topic else "") + tz_info
 
         if name == "confirm_booking":
@@ -722,8 +771,8 @@ class SchedulingEngine:
         if not conv.selected_slot:
             return None
 
-        guest_name = conv.guest_name or "Guest"
-        topic = conv.guest_topic or ""
+        guest_name = _sanitize_text(conv.guest_name or "Guest")
+        topic = _sanitize_text(conv.guest_topic or "")
         summary = f"Meeting with {guest_name}"
         if topic:
             summary += f": {topic}"
@@ -740,6 +789,7 @@ class SchedulingEngine:
         all_attendee_emails.extend(conv.attendee_emails)
 
         booking_id = reservation_id or secrets.token_urlsafe(16)
+        cancel_token = secrets.token_urlsafe(32)
 
         if self.config.dry_run:
             booking = Booking(
@@ -753,6 +803,7 @@ class SchedulingEngine:
                 slot=conv.selected_slot,
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
+                cancel_token=cancel_token,
             )
             if reservation_id:
                 self.db.finalize_booking(booking)
@@ -782,6 +833,7 @@ class SchedulingEngine:
                 slot=conv.selected_slot,
                 calendar_event_id=event.get("event_id"),
                 meet_link=event.get("meet_link"),
+                cancel_token=cancel_token,
             )
             if reservation_id:
                 self.db.finalize_booking(booking)
@@ -802,6 +854,25 @@ class SchedulingEngine:
             except Exception as e:
                 logger.error(f"Failed to notify owner: {e}")
 
+    def _get_cancel_url(self, booking: Booking) -> str:
+        """Build the cancel URL for a booking. Returns empty string if web is not available."""
+        if not booking.cancel_token:
+            return ""
+        base = ""
+        if self.config.agent_card and self.config.agent_card.url:
+            base = self.config.agent_card.url.rstrip("/")
+        elif "web" in self.config.channels and self.config.channels["web"].enabled:
+            web_cfg = self.config.channels["web"]
+            host = web_cfg.get("host", "0.0.0.0")
+            port = web_cfg.get("port", 8080)
+            # Skip unroutable bind addresses — cancel URL needs a real hostname
+            if host in ("0.0.0.0", "::"):
+                return ""
+            base = f"http://{host}:{port}"
+        if not base:
+            return ""
+        return f"{base}/cancel/{booking.cancel_token}"
+
     def _format_confirmation(self, booking: Booking, guest_timezone: str = "") -> str:
         """Format a booking confirmation message."""
         lines = ["Meeting confirmed!"]
@@ -821,4 +892,7 @@ class SchedulingEngine:
         lines.append(f"  Booking ID: {booking.id}")
         if booking.guest_email:
             lines.append(f"  Calendar invite sent to {booking.guest_email}. Please check for the correct time in your timezone.")
+        cancel_url = self._get_cancel_url(booking)
+        if cancel_url:
+            lines.append(f"  Cancel: {cancel_url}")
         return "\n".join(lines)

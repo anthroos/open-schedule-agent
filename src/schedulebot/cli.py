@@ -93,16 +93,17 @@ def cmd_check(args: argparse.Namespace) -> None:
 
     # Check LLM
     try:
-        llm = _build_llm(config)
-        print(f"[OK] LLM provider: {config.llm.provider} ({config.llm.model})")
+        llm, actual_provider, actual_model = _build_llm(config)
+        print(f"[OK] LLM provider: {actual_provider} ({actual_model})")
     except Exception as e:
         print(f"[FAIL] LLM: {e}")
         errors.append("LLM")
 
     # Check availability rules
     try:
+        import os as _os
         from .database import Database
-        check_db = Database()
+        check_db = Database(_os.environ.get("DATABASE_PATH", "schedulebot.db"))
         check_db.connect()
         rules = check_db.get_availability_rules()
         if rules:
@@ -137,15 +138,18 @@ def cmd_check(args: argparse.Namespace) -> None:
 
 def cmd_slots(args: argparse.Namespace) -> None:
     """Display available slots for debugging."""
+    import os
     from .config import load_config
     from .calendar.google_calendar import GoogleCalendarProvider
     from .core.availability import AvailabilityEngine
-
     from .database import Database
 
     config = load_config(args.config)
+    if args.days:
+        config.availability.max_days_ahead = args.days
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
-    db = Database()
+    db_path = os.environ.get("DATABASE_PATH", "schedulebot.db")
+    db = Database(db_path)
     db.connect()
     availability = AvailabilityEngine(config.availability, calendar, db)
 
@@ -164,6 +168,7 @@ def cmd_slots(args: argparse.Namespace) -> None:
 
 def cmd_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server (stdio transport for local testing / Claude Desktop)."""
+    import os
     from .config import load_config
     from .calendar.google_calendar import GoogleCalendarProvider
     from .core.availability import AvailabilityEngine
@@ -176,7 +181,7 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     )
 
     config = load_config(args.config)
-    db = Database()
+    db = Database(os.environ.get("DATABASE_PATH", "schedulebot.db"))
     db.connect()
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
     availability = AvailabilityEngine(config.availability, calendar, db)
@@ -216,7 +221,7 @@ async def _run_bot(config) -> None:
     db.connect()
 
     calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
-    llm = _build_llm(config)
+    llm, _, _ = _build_llm(config)
     engine = SchedulingEngine(config, calendar, llm, db)
 
     # Warn if no owner IDs configured for enabled channels
@@ -233,10 +238,14 @@ async def _run_bot(config) -> None:
 
     # Create MCP server if enabled
     mcp_app = None
+    _mcp_notifier_holder = [None]  # mutable holder so MCP tools can access notifier set later
     if config.mcp.enabled:
         try:
             from .mcp_server import create_mcp_server
-            mcp_server = create_mcp_server(config, engine.availability, calendar, db)
+            mcp_server = create_mcp_server(
+                config, engine.availability, calendar, db,
+                notifier=_mcp_notifier_holder,
+            )
             if config.mcp.transport == "streamable-http":
                 mcp_app = mcp_server.streamable_http_app()
                 logger.info("MCP server enabled at %s", config.mcp.path)
@@ -253,6 +262,8 @@ async def _run_bot(config) -> None:
             owner_name=config.owner.name,
             owner_email=config.owner.email,
             agent_card=config.agent_card,
+            calendar=calendar,
+            notifier_holder=_mcp_notifier_holder,
         )
         if adapter:
             adapters.append(adapter)
@@ -264,7 +275,9 @@ async def _run_bot(config) -> None:
         notif_adapter = next((a for a in adapters if a.name == notif_channel), None)
         if notif_adapter:
             from .notifications import Notifier
-            engine.notifier = Notifier(notif_adapter, notif_owner_id)
+            notifier_instance = Notifier(notif_adapter, notif_owner_id)
+            engine.notifier = notifier_instance
+            _mcp_notifier_holder[0] = notifier_instance  # Wire to MCP server too
             logger.info("Owner notifications enabled via %s -> %s", notif_channel, notif_owner_id)
         else:
             logger.warning(
@@ -299,10 +312,30 @@ async def _run_bot(config) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
+    # Start reminder loop if configured
+    reminder_loop = None
+    reminder_minutes = config.notifications.reminder_minutes
+    if reminder_minutes > 0 and adapters:
+        from .reminders import ReminderLoop
+        adapter_map = {a.name: a for a in adapters}
+        notif_adapter = next((a for a in adapters if a.name == notif_channel), None) if notif_channel else None
+        reminder_loop = ReminderLoop(
+            db=db,
+            adapters=adapter_map,
+            reminder_minutes=reminder_minutes,
+            owner_adapter=notif_adapter,
+            owner_id=notif_owner_id or "",
+        )
+        await reminder_loop.start()
+
     # Start all adapters
     tasks = [asyncio.create_task(a.start()) for a in adapters]
 
     await stop_event.wait()
+
+    # Stop reminder loop
+    if reminder_loop:
+        await reminder_loop.stop()
 
     # Stop all adapters
     for adapter in adapters:
@@ -311,15 +344,23 @@ async def _run_bot(config) -> None:
     db.close()
 
 
+_PLACEHOLDER_KEYS = {"sk-ant-...", "sk-...", "sk-ant-xxx", "sk-xxx", "your-api-key-here", ""}
+
+
 def _build_llm(config):
-    """Build LLM provider from config, with auto-detection of API keys."""
+    """Build LLM provider from config, with auto-detection of API keys.
+
+    Returns (llm_instance, actual_provider, actual_model) tuple.
+    """
     import os
 
     provider = config.llm.provider.lower()
     model = config.llm.model
 
-    has_anthropic_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    has_openai_key = bool(os.environ.get("OPENAI_API_KEY"))
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    has_anthropic_key = bool(anthropic_key) and anthropic_key not in _PLACEHOLDER_KEYS
+    has_openai_key = bool(openai_key) and openai_key not in _PLACEHOLDER_KEYS
 
     # Auto-detect: if configured provider's key is missing, try the other
     if provider == "anthropic" and not has_anthropic_key and has_openai_key:
@@ -338,26 +379,34 @@ def _build_llm(config):
         logger.info("[auto-detect] Model adjusted to %s", model)
 
     if provider == "anthropic":
+        if not has_anthropic_key:
+            raise ValueError("ANTHROPIC_API_KEY not set or is a placeholder. Set a valid key in .env")
         from .llm.anthropic import AnthropicProvider
-        return AnthropicProvider(model=model)
+        return AnthropicProvider(model=model), provider, model
     elif provider == "openai":
+        if not has_openai_key:
+            raise ValueError("OPENAI_API_KEY not set or is a placeholder. Set a valid key in .env")
         from .llm.openai import OpenAIProvider
-        return OpenAIProvider(model=model)
+        return OpenAIProvider(model=model), provider, model
     elif provider == "ollama":
         from .llm.ollama import OllamaProvider
-        return OllamaProvider(model=model, base_url=config.llm.base_url or "http://localhost:11434")
+        return OllamaProvider(model=model, base_url=config.llm.base_url or "http://localhost:11434"), provider, model
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
 
 
-def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp", owner_name="Owner", owner_email="", agent_card=None):
+def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp",
+                   owner_name="Owner", owner_email="", agent_card=None,
+                   calendar=None, notifier_holder=None):
     """Build channel adapter by name."""
     if name == "telegram":
         from .channels.telegram import TelegramAdapter
         return TelegramAdapter(config_extra, on_message)
     elif name == "web":
         from .channels.web import WebAdapter
-        return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path, owner_name=owner_name, owner_email=owner_email, agent_card=agent_card)
+        return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path,
+                          owner_name=owner_name, owner_email=owner_email, agent_card=agent_card,
+                          calendar=calendar, notifier_holder=notifier_holder)
     elif name == "slack":
         from .channels.slack import SlackAdapter
         return SlackAdapter(config_extra, on_message)

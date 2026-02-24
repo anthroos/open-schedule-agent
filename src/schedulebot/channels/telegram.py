@@ -83,7 +83,7 @@ class TelegramAdapter(ChannelAdapter):
             if not update.message or not update.message.text:
                 return
             try:
-                logger.info(f"Received message from {update.effective_user.id}: {update.message.text[:50]}")
+                logger.info("Received message from %s", update.effective_user.id)
                 msg = IncomingMessage(
                     channel="telegram",
                     sender_id=str(update.effective_user.id),

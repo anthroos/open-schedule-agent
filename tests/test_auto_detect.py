@@ -34,7 +34,7 @@ class TestAutoDetectAnthropicToOpenAI:
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
-                llm = _build_llm(config)
+                llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "OpenAIProvider"
 
     def test_adjusts_model_from_claude_to_gpt(self):
@@ -42,7 +42,7 @@ class TestAutoDetectAnthropicToOpenAI:
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
-                llm = _build_llm(config)
+                llm, _, _ = _build_llm(config)
         assert llm.model == "gpt-4o-mini"
 
 
@@ -54,7 +54,7 @@ class TestAutoDetectOpenAIToAnthropic:
         env = {"ANTHROPIC_API_KEY": "sk-ant-test"}
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
-                llm = _build_llm(config)
+                llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "AnthropicProvider"
 
     def test_adjusts_model_from_gpt_to_claude(self):
@@ -62,7 +62,7 @@ class TestAutoDetectOpenAIToAnthropic:
         env = {"ANTHROPIC_API_KEY": "sk-ant-test"}
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
-                llm = _build_llm(config)
+                llm, _, _ = _build_llm(config)
         assert llm.model == "claude-haiku-4-20250414"
 
 
@@ -73,7 +73,7 @@ class TestNoAutoDetect:
         config = FakeConfig(llm=FakeLLMConfig(provider="anthropic", model="claude-haiku-4-20250414"))
         env = {"ANTHROPIC_API_KEY": "sk-ant-test"}
         with patch.dict("os.environ", env, clear=False):
-            llm = _build_llm(config)
+            llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "AnthropicProvider"
         assert llm.model == "claude-haiku-4-20250414"
 
@@ -81,7 +81,7 @@ class TestNoAutoDetect:
         config = FakeConfig(llm=FakeLLMConfig(provider="openai", model="gpt-4o"))
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch.dict("os.environ", env, clear=False):
-            llm = _build_llm(config)
+            llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "OpenAIProvider"
         assert llm.model == "gpt-4o"
 
@@ -91,14 +91,14 @@ class TestOllamaProvider:
 
     def test_ollama_created(self):
         config = FakeConfig(llm=FakeLLMConfig(provider="ollama", model="llama3", base_url=None))
-        llm = _build_llm(config)
+        llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "OllamaProvider"
         assert llm.model == "llama3"
         assert llm.base_url == "http://localhost:11434"
 
     def test_ollama_custom_base_url(self):
         config = FakeConfig(llm=FakeLLMConfig(provider="ollama", model="mistral", base_url="http://gpu-server:11434"))
-        llm = _build_llm(config)
+        llm, _, _ = _build_llm(config)
         assert llm.base_url == "http://gpu-server:11434"
 
 

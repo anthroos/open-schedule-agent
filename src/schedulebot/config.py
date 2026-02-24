@@ -55,6 +55,7 @@ class ChannelConfig:
 class NotificationsConfig:
     channel: str = "telegram"
     owner_id: str = ""
+    reminder_minutes: int = 60  # 0 = disabled
 
 
 @dataclass
@@ -200,9 +201,13 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
             channels[name] = ChannelConfig(enabled=enabled, extra=ch_data)
 
     notif_data = raw.get("notifications", {})
+    reminder_minutes = int(notif_data.get("reminder_minutes", 60))
+    if reminder_minutes < 0 or reminder_minutes > 1440:
+        raise ValueError(f"notifications.reminder_minutes must be 0-1440, got {reminder_minutes}")
     notifications = NotificationsConfig(
         channel=notif_data.get("channel", "telegram"),
         owner_id=notif_data.get("owner_id", ""),
+        reminder_minutes=reminder_minutes,
     )
 
     booking_links = BookingLinksConfig(
@@ -229,9 +234,16 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     )
 
     agent_data = raw.get("agent_card", {})
+    agent_url = agent_data.get("url", "")
+    if agent_url and agent_data.get("enabled", False):
+        if agent_url.startswith("http://"):
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "agent_card.url uses HTTP (%s). HTTPS is strongly recommended for production.", agent_url
+            )
     agent_card = AgentCardConfig(
         enabled=agent_data.get("enabled", False),
-        url=agent_data.get("url", ""),
+        url=agent_url,
         description=agent_data.get("description", ""),
         organization=agent_data.get("organization", ""),
     )

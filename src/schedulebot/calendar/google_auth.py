@@ -35,6 +35,19 @@ def _load_json_from_env_or_file(env_var: str, file_path: str) -> dict | None:
     return None
 
 
+def _validate_credential_path(path_str: str) -> Path:
+    """Validate that a credential path is safe (no traversal, reasonable name)."""
+    p = Path(path_str).resolve()
+    # Must end with .json
+    if p.suffix != ".json":
+        raise ValueError(f"Credential path must be a .json file: {path_str}")
+    # Reject paths with suspicious components
+    for part in Path(path_str).parts:
+        if part == "..":
+            raise ValueError(f"Path traversal not allowed in credential path: {path_str}")
+    return p
+
+
 def get_google_credentials(
     credentials_path: str = "credentials.json",
     token_path: str = "token.json",
@@ -51,6 +64,9 @@ def get_google_credentials(
     Returns:
         Valid Google Credentials object.
     """
+    _validate_credential_path(credentials_path)
+    _validate_credential_path(token_path)
+
     creds = None
 
     token_data = _load_json_from_env_or_file("GOOGLE_TOKEN_JSON", token_path)
@@ -106,6 +122,6 @@ def _save_token(creds: Credentials, token_path: str) -> None:
         p = Path(token_path)
         p.write_text(json.dumps(token_data, indent=2))
         p.chmod(0o600)
-        logger.info(f"Token saved to {token_path}")
+        logger.info("Token saved to %s", token_path)
     except OSError:
         logger.warning(f"Could not save token to {token_path}")

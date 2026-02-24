@@ -24,6 +24,7 @@ class CalendarProvider(ABC):
         end: datetime,
         description: str = "",
         attendee_email: str | None = None,
+        attendee_emails: list[str] | None = None,
         create_meet_link: bool = False,
     ) -> dict:
         """Create a calendar event. Returns dict with 'event_id' and optionally 'meet_link'."""

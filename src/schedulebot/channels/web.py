@@ -1,5 +1,7 @@
 """Web channel adapter using FastAPI. Includes schedule management API."""
 
+import hmac
+import html
 import logging
 import re
 import time
@@ -33,10 +35,15 @@ class WebAdapter(ChannelAdapter):
         owner_name: str = "Owner",
         owner_email: str = "",
         agent_card=None,
+        calendar=None,
+        notifier_holder=None,
     ):
         super().__init__(config, on_message)
         self.host = config.get("host", "0.0.0.0")
-        self.port = int(config.get("port", 8080))
+        port = int(config.get("port", 8080))
+        if not (1 <= port <= 65535):
+            raise ValueError(f"Invalid web port: {port}. Must be 1-65535.")
+        self.port = port
         self.api_key = config.get("api_key", "")
         self.allowed_origins = config.get("allowed_origins", [])
         self.db = db
@@ -45,6 +52,8 @@ class WebAdapter(ChannelAdapter):
         self.owner_name = owner_name
         self.owner_email = owner_email
         self.agent_card = agent_card
+        self.calendar = calendar
+        self.notifier_holder = notifier_holder  # [notifier] mutable list for late binding
         self._server = None
 
     @property
@@ -66,12 +75,18 @@ class WebAdapter(ChannelAdapter):
 
         app = FastAPI(title="schedulebot", version="0.1.0")
         origins = adapter.allowed_origins or []
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=origins,
-            allow_methods=["GET", "POST", "DELETE"],
-            allow_headers=["Authorization", "Content-Type"],
-        )
+        if "*" in origins and adapter.api_key:
+            logger.warning(
+                "CORS allow_origins contains '*' while API key is set. "
+                "This allows any website to call your schedule API."
+            )
+        if origins:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=origins,
+                allow_methods=["GET", "POST", "DELETE"],
+                allow_headers=["Authorization", "Content-Type"],
+            )
 
         # --- Auth helper (extracts header from Request object) ---
         def check_api_key(request: Request):
@@ -81,7 +96,7 @@ class WebAdapter(ChannelAdapter):
                     detail="Schedule API disabled. Set SCHEDULEBOT_API_KEY to enable.",
                 )
             auth = request.headers.get("authorization", "")
-            if not auth or auth.replace("Bearer ", "") != adapter.api_key:
+            if not auth or not hmac.compare_digest(auth.replace("Bearer ", ""), adapter.api_key):
                 raise HTTPException(status_code=401, detail="Invalid API key")
 
         def check_rate_limit(request: Request):
@@ -126,9 +141,12 @@ class WebAdapter(ChannelAdapter):
             # Validate sender_id length to prevent storage abuse
             if len(req.sender_id) > MAX_SENDER_ID_LENGTH:
                 raise HTTPException(status_code=400, detail="sender_id too long")
+            # Prevent owner impersonation via unauthenticated web endpoint:
+            # prefix sender_id to ensure it never matches owner_ids.web
+            safe_sender_id = f"web:{req.sender_id}"
             msg = IncomingMessage(
                 channel="web",
-                sender_id=req.sender_id,
+                sender_id=safe_sender_id,
                 sender_name=req.sender_name[:100],
                 text=req.text,
             )
@@ -175,9 +193,26 @@ class WebAdapter(ChannelAdapter):
             check_api_key(request)
             if not adapter.db:
                 raise HTTPException(status_code=500, detail="Database not available")
+            # Validate day_of_week
+            valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", ""}
+            if req.day_of_week.lower() not in valid_days:
+                raise HTTPException(status_code=400, detail=f"Invalid day_of_week: {req.day_of_week}")
+            # Validate time format HH:MM
+            import re as _re
+            if not _re.match(r"^\d{1,2}:\d{2}$", req.start_time):
+                raise HTTPException(status_code=400, detail=f"Invalid start_time format: {req.start_time}")
+            if not _re.match(r"^\d{1,2}:\d{2}$", req.end_time):
+                raise HTTPException(status_code=400, detail=f"Invalid end_time format: {req.end_time}")
+            # Validate specific_date format
+            if req.specific_date:
+                try:
+                    from datetime import datetime as _dt
+                    _dt.strptime(req.specific_date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid date format: {req.specific_date}")
             from ..models import AvailabilityRule
             rule = AvailabilityRule(
-                day_of_week=req.day_of_week,
+                day_of_week=req.day_of_week.lower(),
                 specific_date=req.specific_date,
                 start_time=req.start_time,
                 end_time=req.end_time,
@@ -207,6 +242,91 @@ class WebAdapter(ChannelAdapter):
         @app.get("/api/health")
         async def health():
             return {"status": "ok"}
+
+        # --- Self-service cancel ---
+
+        from fastapi.responses import HTMLResponse
+
+        @app.get("/cancel/{cancel_token}")
+        async def cancel_page(cancel_token: str, request: Request):
+            """Show cancellation confirmation page."""
+            check_rate_limit(request)
+            if not adapter.db:
+                raise HTTPException(status_code=500, detail="Database not available")
+            if len(cancel_token) > 64:
+                raise HTTPException(status_code=400, detail="Invalid token")
+            booking = adapter.db.get_booking_by_cancel_token(cancel_token)
+            if not booking:
+                return HTMLResponse(
+                    "<html><body><h1>Booking not found</h1>"
+                    "<p>This link may have expired or the booking was already cancelled.</p>"
+                    "</body></html>",
+                    status_code=404,
+                    headers={"Referrer-Policy": "no-referrer"},
+                )
+            safe_owner = html.escape(adapter.owner_name)
+            safe_slot = html.escape(str(booking.slot))
+            safe_token = html.escape(cancel_token)
+            return HTMLResponse(
+                f"<html><body>"
+                f"<h1>Cancel your meeting?</h1>"
+                f"<p>Meeting with {safe_owner}: {safe_slot}</p>"
+                f'<form method="POST" action="/cancel/{safe_token}">'
+                f'<button type="submit">Yes, cancel my booking</button>'
+                f"</form>"
+                f"</body></html>",
+                headers={"Referrer-Policy": "no-referrer"},
+            )
+
+        @app.post("/cancel/{cancel_token}")
+        async def execute_cancel(cancel_token: str, request: Request):
+            """Execute the cancellation."""
+            check_rate_limit(request)
+            if not adapter.db:
+                raise HTTPException(status_code=500, detail="Database not available")
+            if len(cancel_token) > 64:
+                raise HTTPException(status_code=400, detail="Invalid token")
+            booking = adapter.db.get_booking_by_cancel_token(cancel_token)
+            if not booking:
+                return HTMLResponse(
+                    "<html><body><h1>Booking not found</h1>"
+                    "<p>This link may have expired or the booking was already cancelled.</p>"
+                    "</body></html>",
+                    status_code=404,
+                    headers={"Referrer-Policy": "no-referrer"},
+                )
+
+            # Delete calendar event
+            if booking.calendar_event_id and booking.calendar_event_id != "dry-run" and adapter.calendar:
+                try:
+                    await adapter.calendar.delete_event(booking.calendar_event_id)
+                except Exception as e:
+                    logger.warning("Could not delete calendar event %s: %s", booking.calendar_event_id, e)
+
+            adapter.db.delete_booking(booking.id)
+
+            # Notify owner
+            _notifier = adapter.notifier_holder[0] if adapter.notifier_holder else None
+            if _notifier:
+                try:
+                    from ..models import OutgoingMessage as _OM
+                    safe_name = re.sub(r"<[^>]+>", "", booking.guest_name)
+                    await _notifier.channel.send_message(
+                        _notifier.owner_id,
+                        _OM(text=f"Booking cancelled by guest.\n  Guest: {safe_name}\n  Was: {booking.slot}"),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to notify owner about cancellation: %s", e)
+
+            safe_owner = html.escape(adapter.owner_name)
+            safe_slot = html.escape(str(booking.slot))
+            return HTMLResponse(
+                f"<html><body>"
+                f"<h1>Booking cancelled</h1>"
+                f"<p>Your meeting with {safe_owner} on {safe_slot} has been cancelled.</p>"
+                f"</body></html>",
+                headers={"Referrer-Policy": "no-referrer"},
+            )
 
         # --- MCP Server mount ---
         if adapter.mcp_app:

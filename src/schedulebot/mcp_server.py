@@ -17,11 +17,31 @@ from .models import Booking, TimeSlot
 logger = logging.getLogger(__name__)
 
 
+def _build_cancel_url(config: Config, cancel_token: str) -> str:
+    """Build a cancel URL from config. Returns empty string if web is not available."""
+    if not cancel_token:
+        return ""
+    base = ""
+    if config.agent_card and config.agent_card.url:
+        base = config.agent_card.url.rstrip("/")
+    elif "web" in config.channels and config.channels["web"].enabled:
+        web_cfg = config.channels["web"]
+        host = web_cfg.get("host", "0.0.0.0")
+        port = web_cfg.get("port", 8080)
+        if host in ("0.0.0.0", "::"):
+            return ""
+        base = f"http://{host}:{port}"
+    if not base:
+        return ""
+    return f"{base}/cancel/{cancel_token}"
+
+
 def create_mcp_server(
     config: Config,
     availability: AvailabilityEngine,
     calendar: CalendarProvider,
     db: Database,
+    notifier=None,
 ):
     """Create and configure the MCP server with scheduling tools."""
     from mcp.server.fastmcp import FastMCP
@@ -67,7 +87,8 @@ def create_mcp_server(
         """Get available time slots for booking a consultation.
 
         Args:
-            date: Specific date in YYYY-MM-DD format. If not given, returns slots for the next 14 days.
+            date: Specific date in YYYY-MM-DD format. Returns slots for that day only.
+                  If not given, returns slots for the next 14 days.
             service: Service slug to filter by duration. Use get_services() to see available slugs.
         """
         from_date = None
@@ -75,6 +96,11 @@ def create_mcp_server(
             from_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
 
         slots = await availability.get_available_slots(from_date)
+
+        # Filter to single day when date is specified
+        if from_date:
+            day_end = from_date + timedelta(days=1)
+            slots = [s for s in slots if s.start >= from_date and s.start < day_end]
 
         if service:
             svc = next((s for s in config.services if s.slug == service), None)
@@ -129,6 +155,22 @@ def create_mcp_server(
             client_email: Email address of the person booking.
             service: Optional service slug. Defaults to standard meeting duration.
         """
+        # Input length validation
+        if len(client_name) > 100:
+            return {"error": "client_name too long (max 100 characters)."}
+        if len(client_email) > 254:
+            return {"error": "client_email too long (max 254 characters)."}
+        if service and len(service) > 50:
+            return {"error": "service slug too long (max 50 characters)."}
+
+        # Sanitize text inputs (strip HTML)
+        import re
+        client_name = re.sub(r"<[^>]+>", "", client_name)
+
+        # Basic email format check
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", client_email):
+            return {"error": "Invalid email format."}
+
         duration_minutes = config.availability.meeting_duration_minutes
         if service:
             svc = next((s for s in config.services if s.slug == service), None)
@@ -142,6 +184,14 @@ def create_mcp_server(
         except ValueError:
             return {"error": "Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time."}
 
+        # Date bounds: not in the past, not too far ahead
+        now = datetime.now(tz)
+        if start < now:
+            return {"error": "Cannot book in the past."}
+        max_ahead = timedelta(days=config.availability.max_days_ahead)
+        if start > now + max_ahead:
+            return {"error": f"Cannot book more than {config.availability.max_days_ahead} days ahead."}
+
         end = start + timedelta(minutes=duration_minutes)
         slot = TimeSlot(start=start, end=end)
 
@@ -154,28 +204,37 @@ def create_mcp_server(
         if not slot_available:
             return {"error": "Requested time slot is not available. Use get_available_slots() to see open times."}
 
-        # Double-booking guard
-        if db.is_slot_booked(start, end):
+        # Atomic slot reservation to prevent double-booking
+        reservation_id = secrets.token_urlsafe(16)
+        if not db.reserve_slot(start, end, reservation_id):
             return {"error": "This slot was just booked by someone else. Use get_available_slots() for current openings."}
+
+        cancel_token = secrets.token_urlsafe(32)
 
         if config.dry_run:
             booking = Booking(
-                id=secrets.token_urlsafe(16),
+                id=reservation_id,
                 guest_name=client_name,
                 guest_channel="mcp",
                 guest_sender_id=client_email,
+                guest_email=client_email,
                 slot=slot,
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
+                cancel_token=cancel_token,
             )
-            db.save_booking(booking)
-            return {
+            db.finalize_booking(booking)
+            result = {
                 "status": "confirmed (dry-run)",
                 "booking_id": booking.id,
                 "datetime": start.isoformat(),
                 "duration_minutes": duration_minutes,
                 "meet_link": booking.meet_link,
             }
+            cancel_url = _build_cancel_url(config, cancel_token)
+            if cancel_url:
+                result["cancel_url"] = cancel_url
+            return result
 
         try:
             event = await calendar.create_event(
@@ -183,23 +242,35 @@ def create_mcp_server(
                 start=start,
                 end=end,
                 description=f"Booked via MCP. Email: {client_email}",
+                attendee_emails=[client_email],
                 create_meet_link=config.calendar.create_meet_link,
             )
         except Exception as e:
+            db.release_slot(reservation_id)
             logger.error(f"Failed to create calendar event via MCP: {e}")
             return {"error": "Failed to create calendar event. Please try again."}
 
         booking = Booking(
-            id=secrets.token_urlsafe(16),
+            id=reservation_id,
             guest_name=client_name,
             guest_channel="mcp",
             guest_sender_id=client_email,
+            guest_email=client_email,
             slot=slot,
             calendar_event_id=event.get("event_id"),
             meet_link=event.get("meet_link"),
             notes=f"Service: {service}" if service else "",
+            cancel_token=cancel_token,
         )
-        db.save_booking(booking)
+        db.finalize_booking(booking)
+
+        # Notify owner (notifier may be a list holder [instance] for late binding)
+        _notifier = notifier[0] if isinstance(notifier, list) else notifier
+        if _notifier:
+            try:
+                await _notifier.notify_new_booking(booking)
+            except Exception as e:
+                logger.warning("Failed to notify owner about MCP booking: %s", e)
 
         result = {
             "status": "confirmed",
@@ -211,6 +282,9 @@ def create_mcp_server(
         }
         if booking.meet_link:
             result["meet_link"] = booking.meet_link
+        cancel_url = _build_cancel_url(config, cancel_token)
+        if cancel_url:
+            result["cancel_url"] = cancel_url
         return result
 
     @mcp.tool()
@@ -220,10 +294,12 @@ def create_mcp_server(
         Args:
             booking_id: The booking ID returned from book_consultation.
         """
-        bookings = db.get_bookings()
-        booking = next((b for b in bookings if b.id == booking_id), None)
+        if not booking_id or len(booking_id) > 30:
+            return {"error": "Invalid booking ID format."}
+
+        booking = db.get_booking_by_id(booking_id)
         if not booking:
-            return {"error": f"Booking not found: {booking_id}"}
+            return {"error": "Booking not found."}
 
         calendar_deleted = False
         if booking.calendar_event_id and booking.calendar_event_id != "dry-run":

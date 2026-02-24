@@ -3,7 +3,7 @@ owner:
   email: "you@example.com"
   owner_ids:
     telegram: "${OWNER_TELEGRAM_ID}"  # Get your ID: send /start to @userinfobot in Telegram
-    web: "owner"
+    # web: "owner"  # Web owner mode requires API key auth — see docs
 
 availability:
   timezone: "UTC"
@@ -45,7 +45,7 @@ channels:
     host: "0.0.0.0"
     port: 8080
     api_key: "${SCHEDULEBOT_API_KEY}"
-    allowed_origins: []  # e.g. ["https://yourdomain.com"] — empty = no CORS
+    allowed_origins: []  # e.g. ["https://yourdomain.com"] — empty = CORS disabled. Never use ["*"] in production.
   slack:
     enabled: false
     bot_token: "${SLACK_BOT_TOKEN}"
@@ -57,6 +57,7 @@ channels:
 notifications:
   channel: "telegram"
   owner_id: "${OWNER_TELEGRAM_ID}"
+  reminder_minutes: 60  # Send reminder N minutes before meeting. 0 = disabled.
 
 # Agent discovery card — lets other AI agents find and book meetings with you
 # Other agents discover you via: GET https://yourdomain.com/.well-known/agent.json
