@@ -59,8 +59,17 @@ notifications:
   owner_id: "${OWNER_TELEGRAM_ID}"
   reminder_minutes: 60  # Send reminder N minutes before meeting. 0 = disabled.
 
+# MCP server — lets AI agents (Claude Code, Cursor, Open CLAW) use your calendar as a tool
+# When enabled, exposes tools: get_available_slots, book_consultation, cancel_booking
+# Transports: "stdio" (local, for Claude Desktop) or "streamable-http" (remote, for web deploy)
+mcp:
+  enabled: false       # Set to true to enable MCP server
+  transport: "streamable-http"  # stdio | streamable-http
+  path: "/mcp"         # HTTP path where MCP server is mounted (streamable-http only)
+
 # Agent discovery card — lets other AI agents find and book meetings with you
 # Other agents discover you via: GET https://yourdomain.com/.well-known/agent.json
+# Also serves MCP discovery at: GET https://yourdomain.com/.well-known/mcp.json
 agent_card:
   enabled: false
   url: ""  # Your public URL, e.g. "https://schedule.yourdomain.com"
