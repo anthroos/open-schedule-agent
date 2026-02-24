@@ -238,16 +238,17 @@ async def _run_bot(config) -> None:
 
     # Create MCP server if enabled
     mcp_app = None
+    _mcp_server = None
     _mcp_notifier_holder = [None]  # mutable holder so MCP tools can access notifier set later
     if config.mcp.enabled:
         try:
             from .mcp_server import create_mcp_server
-            mcp_server = create_mcp_server(
+            _mcp_server = create_mcp_server(
                 config, engine.availability, calendar, db,
                 notifier=_mcp_notifier_holder,
             )
             if config.mcp.transport == "streamable-http":
-                mcp_app = mcp_server.streamable_http_app()
+                mcp_app = _mcp_server.streamable_http_app()
                 logger.info("MCP server enabled at %s", config.mcp.path)
         except ImportError:
             logger.warning("MCP dependencies not installed. Run: pip install schedulebot[mcp]")
@@ -259,6 +260,7 @@ async def _run_bot(config) -> None:
         adapter = _build_channel(
             name, ch_config.extra, engine.handle_message, db,
             mcp_app=mcp_app, mcp_path=config.mcp.path,
+            mcp_server=_mcp_server,
             owner_name=config.owner.name,
             owner_email=config.owner.email,
             agent_card=config.agent_card,
@@ -397,7 +399,7 @@ def _build_llm(config):
 
 
 def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp",
-                   owner_name="Owner", owner_email="", agent_card=None,
+                   mcp_server=None, owner_name="Owner", owner_email="", agent_card=None,
                    calendar=None, notifier_holder=None, services=None):
     """Build channel adapter by name."""
     if name == "telegram":
@@ -406,6 +408,7 @@ def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_pa
     elif name == "web":
         from .channels.web import WebAdapter
         return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path,
+                          mcp_server=mcp_server,
                           owner_name=owner_name, owner_email=owner_email, agent_card=agent_card,
                           calendar=calendar, notifier_holder=notifier_holder,
                           services=services)

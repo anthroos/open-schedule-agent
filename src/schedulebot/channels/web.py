@@ -33,6 +33,7 @@ class WebAdapter(ChannelAdapter):
         db=None,
         mcp_app=None,
         mcp_path: str = "/mcp",
+        mcp_server=None,
         owner_name: str = "Owner",
         owner_email: str = "",
         agent_card=None,
@@ -51,6 +52,7 @@ class WebAdapter(ChannelAdapter):
         self.db = db
         self.mcp_app = mcp_app
         self.mcp_path = mcp_path
+        self.mcp_server = mcp_server
         self.owner_name = owner_name
         self.owner_email = owner_email
         self.agent_card = agent_card
@@ -76,7 +78,18 @@ class WebAdapter(ChannelAdapter):
 
         adapter = self
 
-        app = FastAPI(title="schedulebot", version="0.1.0")
+        # Lifespan: start MCP session manager if present
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def lifespan(app):
+            if adapter.mcp_server:
+                async with adapter.mcp_server.session_manager.run():
+                    yield
+            else:
+                yield
+
+        app = FastAPI(title="schedulebot", version="0.1.0", lifespan=lifespan)
         origins = adapter.allowed_origins or []
         if "*" in origins and adapter.api_key:
             logger.warning(
