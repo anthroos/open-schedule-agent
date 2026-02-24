@@ -206,12 +206,19 @@ class WebAdapter(ChannelAdapter):
             valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", ""}
             if req.day_of_week.lower() not in valid_days:
                 raise HTTPException(status_code=400, detail=f"Invalid day_of_week: {req.day_of_week}")
-            # Validate time format HH:MM
+            # Validate time format HH:MM with range check
             import re as _re
-            if not _re.match(r"^\d{1,2}:\d{2}$", req.start_time):
-                raise HTTPException(status_code=400, detail=f"Invalid start_time format: {req.start_time}")
-            if not _re.match(r"^\d{1,2}:\d{2}$", req.end_time):
-                raise HTTPException(status_code=400, detail=f"Invalid end_time format: {req.end_time}")
+
+            def _valid_time(t: str) -> bool:
+                m = _re.match(r"^(\d{1,2}):(\d{2})$", t.strip())
+                if not m:
+                    return False
+                return int(m.group(1)) <= 23 and int(m.group(2)) <= 59
+
+            if not _valid_time(req.start_time):
+                raise HTTPException(status_code=400, detail=f"Invalid start_time: {req.start_time}. Use HH:MM (00:00-23:59).")
+            if not _valid_time(req.end_time):
+                raise HTTPException(status_code=400, detail=f"Invalid end_time: {req.end_time}. Use HH:MM (00:00-23:59).")
             # Validate specific_date format
             if req.specific_date:
                 try:
@@ -255,6 +262,28 @@ class WebAdapter(ChannelAdapter):
         # --- Self-service cancel ---
 
         from fastapi.responses import HTMLResponse
+        import hashlib
+        import secrets as _secrets
+
+        # CSRF nonce helpers: HMAC-based, valid for 1 hour
+        _CSRF_TTL = 3600
+
+        def _make_csrf_nonce(cancel_token: str) -> str:
+            """Generate a time-limited CSRF nonce for the cancel form."""
+            ts = str(int(time.time()) // _CSRF_TTL)
+            key = (adapter.api_key or "schedulebot-csrf-fallback").encode()
+            sig = hmac.new(key, f"{cancel_token}:{ts}".encode(), hashlib.sha256).hexdigest()[:16]
+            return sig
+
+        def _verify_csrf_nonce(cancel_token: str, nonce: str) -> bool:
+            """Verify CSRF nonce, accepting current and previous time windows."""
+            key = (adapter.api_key or "schedulebot-csrf-fallback").encode()
+            now_ts = int(time.time()) // _CSRF_TTL
+            for ts in (str(now_ts), str(now_ts - 1)):
+                expected = hmac.new(key, f"{cancel_token}:{ts}".encode(), hashlib.sha256).hexdigest()[:16]
+                if hmac.compare_digest(expected, nonce):
+                    return True
+            return False
 
         @app.get("/cancel/{cancel_token}")
         async def cancel_page(cancel_token: str, request: Request):
@@ -271,19 +300,23 @@ class WebAdapter(ChannelAdapter):
                     "<p>This link may have expired or the booking was already cancelled.</p>"
                     "</body></html>",
                     status_code=404,
+                    media_type="text/html; charset=utf-8",
                     headers={"Referrer-Policy": "no-referrer"},
                 )
             safe_owner = html.escape(adapter.owner_name)
             safe_slot = html.escape(str(booking.slot))
             safe_token = html.escape(cancel_token)
+            csrf_nonce = _make_csrf_nonce(cancel_token)
             return HTMLResponse(
                 f"<html><body>"
                 f"<h1>Cancel your meeting?</h1>"
                 f"<p>Meeting with {safe_owner}: {safe_slot}</p>"
                 f'<form method="POST" action="/cancel/{safe_token}">'
+                f'<input type="hidden" name="csrf" value="{csrf_nonce}">'
                 f'<button type="submit">Yes, cancel my booking</button>'
                 f"</form>"
                 f"</body></html>",
+                media_type="text/html; charset=utf-8",
                 headers={"Referrer-Policy": "no-referrer"},
             )
 
@@ -295,6 +328,11 @@ class WebAdapter(ChannelAdapter):
                 raise HTTPException(status_code=500, detail="Database not available")
             if len(cancel_token) > 64:
                 raise HTTPException(status_code=400, detail="Invalid token")
+            # Verify CSRF nonce
+            form = await request.form()
+            csrf_nonce = form.get("csrf", "")
+            if not csrf_nonce or not _verify_csrf_nonce(cancel_token, csrf_nonce):
+                raise HTTPException(status_code=403, detail="Invalid or expired form. Please reload the cancel page.")
             booking = adapter.db.get_booking_by_cancel_token(cancel_token)
             if not booking:
                 return HTMLResponse(
@@ -302,6 +340,7 @@ class WebAdapter(ChannelAdapter):
                     "<p>This link may have expired or the booking was already cancelled.</p>"
                     "</body></html>",
                     status_code=404,
+                    media_type="text/html; charset=utf-8",
                     headers={"Referrer-Policy": "no-referrer"},
                 )
 
@@ -334,6 +373,7 @@ class WebAdapter(ChannelAdapter):
                 f"<h1>Booking cancelled</h1>"
                 f"<p>Your meeting with {safe_owner} on {safe_slot} has been cancelled.</p>"
                 f"</body></html>",
+                media_type="text/html; charset=utf-8",
                 headers={"Referrer-Policy": "no-referrer"},
             )
 
