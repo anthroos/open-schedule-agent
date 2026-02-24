@@ -68,4 +68,7 @@ with open('/app/config.yaml', 'w') as f:
     yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True)
 "
 
+# Ensure DATABASE_PATH points to the writable data dir
+export DATABASE_PATH="${DATABASE_PATH:-/app/data/schedulebot.db}"
+
 exec "$@"
