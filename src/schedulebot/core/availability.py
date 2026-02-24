@@ -33,6 +33,11 @@ class AvailabilityEngine:
         self.db = db
         self.tz = ZoneInfo(config.timezone)
 
+    def set_timezone(self, tz_name: str) -> None:
+        """Update timezone at runtime (after DB persistence by caller)."""
+        self.tz = ZoneInfo(tz_name)
+        self.config.timezone = tz_name
+
     async def get_available_slots(self, from_date: datetime | None = None) -> list[TimeSlot]:
         """Get all available slots from now to max_days_ahead."""
         now = datetime.now(self.tz)

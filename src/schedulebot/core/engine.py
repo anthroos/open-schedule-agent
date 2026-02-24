@@ -99,10 +99,48 @@ class SchedulingEngine:
         self.notifier = notifier
         self.availability = AvailabilityEngine(config.availability, calendar, db)
 
+        # Seed timezone from DB (persisted value overrides config)
+        saved_tz = self.db.get_setting("timezone")
+        if saved_tz:
+            try:
+                from zoneinfo import ZoneInfo
+                ZoneInfo(saved_tz)  # validate
+                self.availability.set_timezone(saved_tz)
+                logger.info("Loaded timezone from DB: %s", saved_tz)
+            except (KeyError, Exception):
+                logger.warning("Invalid saved timezone '%s', using config default", saved_tz)
+
     def _is_owner(self, channel: str, sender_id: str) -> bool:
         """Check if the sender is the owner."""
         owner_id = self.config.owner.owner_ids.get(channel, "")
         return owner_id != "" and owner_id == sender_id
+
+    def _handle_timezone_command(self, raw_text: str) -> OutgoingMessage:
+        """Handle /timezone [tz] — show current or change timezone."""
+        from zoneinfo import ZoneInfo
+
+        parts = raw_text.split(maxsplit=1)
+        if len(parts) == 1:
+            # No arg — show current
+            tz_name = self.availability.config.timezone
+            now = datetime.now(ZoneInfo(tz_name))
+            offset = now.strftime("%z")
+            offset_fmt = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+            return OutgoingMessage(text=f"Current timezone: {tz_name} ({offset_fmt})")
+
+        new_tz = parts[1].strip()
+        try:
+            ZoneInfo(new_tz)  # validate
+        except (KeyError, Exception):
+            return OutgoingMessage(text=f"Invalid timezone: '{new_tz}'. Use IANA format, e.g. 'Europe/London', 'Asia/Makassar'.")
+
+        self.availability.set_timezone(new_tz)
+        self.db.set_setting("timezone", new_tz)
+        now = datetime.now(ZoneInfo(new_tz))
+        offset = now.strftime("%z")
+        offset_fmt = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+        logger.info("Timezone changed to %s by owner", new_tz)
+        return OutgoingMessage(text=f"Timezone changed to {new_tz} ({offset_fmt})")
 
     async def handle_message(self, msg: IncomingMessage) -> OutgoingMessage:
         """Process an incoming message. Routes to owner or guest flow."""
@@ -194,6 +232,10 @@ class SchedulingEngine:
         if text_lower == "/clear":
             count = self.db.clear_availability_rules()
             return OutgoingMessage(text=f"Cleared {count} availability rules.")
+
+        # /timezone [tz] — show or change timezone
+        if text_lower.startswith("/timezone"):
+            return self._handle_timezone_command(msg.text.strip())
 
         # Get or create conversation
         conv = self.db.get_conversation(msg.sender_id)
@@ -387,6 +429,23 @@ class SchedulingEngine:
 
         if name == "show_rules":
             return self.db.format_availability_summary()
+
+        if name == "set_timezone":
+            from zoneinfo import ZoneInfo
+            new_tz = params.get("timezone", "").strip()
+            if not new_tz:
+                return "Error: timezone is required."
+            try:
+                ZoneInfo(new_tz)
+            except (KeyError, Exception):
+                return f"Invalid timezone: '{new_tz}'. Use IANA format (e.g. Europe/London)."
+            self.availability.set_timezone(new_tz)
+            self.db.set_setting("timezone", new_tz)
+            now = datetime.now(ZoneInfo(new_tz))
+            offset = now.strftime("%z")
+            offset_fmt = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+            logger.info("Timezone changed to %s via LLM tool", new_tz)
+            return f"Timezone changed to {new_tz} ({offset_fmt})"
 
         return f"Unknown tool: {name}"
 

@@ -78,6 +78,10 @@ MIGRATIONS = [
         "CREATE INDEX IF NOT EXISTS idx_bookings_cancel_token ON bookings(cancel_token) WHERE cancel_token != ''",
         "CREATE INDEX IF NOT EXISTS idx_bookings_reminder ON bookings(slot_start, reminder_sent) WHERE reminder_sent = 0",
     ],
+    # Migration 5: Settings table for persistent key-value config (e.g. timezone)
+    [
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ],
 ]
 
 
@@ -412,6 +416,26 @@ class Database:
                 )
             self.conn.commit()
             return cursor.rowcount
+
+    # --- Settings (key-value store) ---
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        """Get a persistent setting by key."""
+        row = self.conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Set a persistent setting (upsert)."""
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            self.conn.commit()
+
+    # --- Availability Rules ---
 
     def format_availability_summary(self) -> str:
         """Human-readable summary of current availability rules."""

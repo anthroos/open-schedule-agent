@@ -141,4 +141,18 @@ OWNER_TOOLS = [
             "properties": {},
         },
     },
+    {
+        "name": "set_timezone",
+        "description": "Change the owner's timezone. Use when the owner says they moved to a different city/country or wants to change their timezone. Use IANA timezone names (e.g. 'Europe/London', 'Asia/Makassar', 'America/New_York').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA timezone name, e.g. 'Europe/London', 'Asia/Makassar', 'US/Eastern'.",
+                },
+            },
+            "required": ["timezone"],
+        },
+    },
 ]

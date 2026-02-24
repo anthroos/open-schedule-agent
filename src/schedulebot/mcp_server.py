@@ -49,13 +49,15 @@ def create_mcp_server(
     mcp = FastMCP(
         "schedulebot",
         instructions=f"Schedule meetings with {config.owner.name}. "
-        f"Timezone: {config.availability.timezone}. "
-        f"Use get_available_slots() to see open times, then book_consultation() to book.",
+        f"Use get_available_slots() to see open times, then book_consultation() to book. "
+        f"Check get_pricing() for timezone info.",
         streamable_http_path="/",
         host="0.0.0.0",  # Disable auto DNS rebinding protection (runs behind reverse proxy)
     )
 
-    tz = ZoneInfo(config.availability.timezone)
+    def _get_tz() -> ZoneInfo:
+        """Always read the current timezone from the availability engine."""
+        return availability.tz
 
     @mcp.tool()
     async def get_services() -> list[dict]:
@@ -95,7 +97,7 @@ def create_mcp_server(
         """
         from_date = None
         if date:
-            from_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
+            from_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=_get_tz())
 
         slots = await availability.get_available_slots(from_date)
 
@@ -125,7 +127,7 @@ def create_mcp_server(
         services = config.services or []
         return {
             "owner": config.owner.name,
-            "timezone": config.availability.timezone,
+            "timezone": availability.config.timezone,
             "services": [
                 {
                     "name": s.name,
@@ -182,12 +184,12 @@ def create_mcp_server(
                 return {"error": f"Unknown service: {service}. Use get_services() to see available options."}
 
         try:
-            start = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            start = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M").replace(tzinfo=_get_tz())
         except ValueError:
             return {"error": "Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time."}
 
         # Date bounds: not in the past, not too far ahead
-        now = datetime.now(tz)
+        now = datetime.now(_get_tz())
         if start < now:
             return {"error": "Cannot book in the past."}
         max_ahead = timedelta(days=config.availability.max_days_ahead)
@@ -198,7 +200,7 @@ def create_mcp_server(
         slot = TimeSlot(start=start, end=end)
 
         # Verify slot is available
-        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=tz)
+        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=_get_tz())
         available_slots = await availability.get_available_slots(day_start)
         slot_available = any(
             s.start <= start and s.end >= end for s in available_slots
