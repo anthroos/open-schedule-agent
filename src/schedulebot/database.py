@@ -413,6 +413,34 @@ class Database:
             self.conn.commit()
             return cursor.rowcount > 0
 
+    def delete_availability_rule_by_match(
+        self, day_of_week: str = "", specific_date: str = "",
+        start_time: str = "", end_time: str = "",
+    ) -> int:
+        """Delete a specific rule matching day/date + start + end. Returns count deleted."""
+        conditions = []
+        params = []
+        if day_of_week:
+            conditions.append("day_of_week = ?")
+            params.append(day_of_week)
+        if specific_date:
+            conditions.append("specific_date = ?")
+            params.append(specific_date)
+        if start_time:
+            conditions.append("start_time = ?")
+            params.append(start_time)
+        if end_time:
+            conditions.append("end_time = ?")
+            params.append(end_time)
+        if not conditions:
+            return 0
+        with self._lock:
+            cursor = self.conn.execute(
+                f"DELETE FROM availability_rules WHERE {' AND '.join(conditions)}", params
+            )
+            self.conn.commit()
+            return cursor.rowcount
+
     def clear_availability_rules(self, day_of_week: str = "", specific_date: str = "") -> int:
         """Clear rules matching criteria. Empty string = don't filter by that field."""
         conditions = []

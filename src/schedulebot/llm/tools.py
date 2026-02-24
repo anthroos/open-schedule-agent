@@ -83,6 +83,32 @@ OWNER_TOOLS = [
         },
     },
     {
+        "name": "delete_rule",
+        "description": "Delete a specific availability rule by matching day (or date) + start + end time. Use this when the owner wants to remove one specific slot without clearing the entire day.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "day": {
+                    "type": "string",
+                    "description": "Day of week, lowercase English. Mutually exclusive with 'date'.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Specific date YYYY-MM-DD. Mutually exclusive with 'day'.",
+                },
+                "start": {
+                    "type": "string",
+                    "description": "Start time HH:MM (24h).",
+                },
+                "end": {
+                    "type": "string",
+                    "description": "End time HH:MM (24h).",
+                },
+            },
+            "required": ["start", "end"],
+        },
+    },
+    {
         "name": "block_time",
         "description": "Block a recurring or specific-date time range (mark as unavailable). Guests cannot book during blocked times.",
         "input_schema": {

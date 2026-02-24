@@ -448,6 +448,24 @@ class SchedulingEngine:
             target = rule.day_of_week or rule.specific_date
             return f"Added availability rule #{rule_id}: {target} {rule.start_time}-{rule.end_time}"
 
+        if name == "delete_rule":
+            day = params.get("day", "").lower()
+            date = params.get("date", "")
+            start = self._validate_time(params.get("start", ""))
+            end = self._validate_time(params.get("end", ""))
+            if not start or not end:
+                return "Error: start and end times are required in HH:MM format."
+            if not day and not date:
+                return "Error: either 'day' or 'date' is required."
+            count = self.db.delete_availability_rule_by_match(
+                day_of_week=day, specific_date=date,
+                start_time=start, end_time=end,
+            )
+            target = day or date
+            if count:
+                return f"Deleted {count} rule(s): {target} {start}-{end}"
+            return f"No matching rule found for {target} {start}-{end}"
+
         if name == "block_time":
             err = self._validate_rule_params(params)
             if err:
