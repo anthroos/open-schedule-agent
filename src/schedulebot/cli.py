@@ -378,7 +378,7 @@ def _build_llm(config):
         model = "gpt-4o-mini"
         logger.info("[auto-detect] Model adjusted to %s", model)
     elif provider == "anthropic" and model.startswith("gpt"):
-        model = "claude-haiku-4-20250414"
+        model = "claude-3-haiku-20240307"
         logger.info("[auto-detect] Model adjusted to %s", model)
 
     if provider == "anthropic":

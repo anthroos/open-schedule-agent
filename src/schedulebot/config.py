@@ -38,7 +38,7 @@ class CalendarConfig:
 @dataclass
 class LLMConfig:
     provider: str = "anthropic"
-    model: str = "claude-haiku-4-20250414"
+    model: str = "claude-3-haiku-20240307"
     base_url: str | None = None
 
 
@@ -190,7 +190,7 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
     llm_data = raw.get("llm", {})
     llm = LLMConfig(
         provider=llm_data.get("provider", "anthropic"),
-        model=llm_data.get("model", "claude-haiku-4-20250414"),
+        model=llm_data.get("model", "claude-3-haiku-20240307"),
         base_url=llm_data.get("base_url"),
     )
 

@@ -12,7 +12,7 @@ from .types import LLMToolResponse, ToolCall
 class AnthropicProvider(LLMProvider):
     """Claude API integration with tool use support."""
 
-    def __init__(self, model: str = "claude-haiku-4-20250414", api_key: str | None = None):
+    def __init__(self, model: str = "claude-3-haiku-20240307", api_key: str | None = None):
         self.model = model
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._client = None

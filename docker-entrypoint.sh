@@ -35,7 +35,7 @@ config = {
     },
     'llm': {
         'provider': os.environ.get('LLM_PROVIDER', 'anthropic'),
-        'model': os.environ.get('LLM_MODEL', 'claude-haiku-4-20250414'),
+        'model': os.environ.get('LLM_MODEL', 'claude-3-haiku-20240307'),
     },
     'channels': {
         'telegram': {
