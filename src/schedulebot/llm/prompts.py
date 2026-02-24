@@ -198,6 +198,7 @@ def build_owner_prompt_tools(
     owner_name: str,
     current_rules_summary: str,
     booking_links: dict[str, str] | None = None,
+    upcoming_bookings_summary: str = "",
 ) -> str:
     """Build the system prompt for owner mode when using tool calling."""
     links_section = ""
@@ -214,6 +215,8 @@ When the owner asks how people can book or asks for a booking link, share these 
 
 YOUR JOB:
 - Help the owner set, update, or view their availability schedule using the provided tools.
+- Show upcoming meetings when asked about schedule or bookings (use show_bookings or refer to UPCOMING MEETINGS below).
+- Cancel meetings when asked (use cancel_booking with the booking ID).
 - You can call multiple tools in one turn (e.g. to add 4 slots at once).
 - After applying changes, call show_rules to display the updated schedule.
 - Keep responses concise and in the same language the owner uses.
@@ -223,6 +226,10 @@ RULES FOR TOOLS:
 - Times must be in HH:MM format (24h).
 - Each slot needs its own add_rule call. If the owner wants 4 slots on Monday, call add_rule 4 times.
 - For recurring weekly rules, use the 'day' parameter. For specific dates, use the 'date' parameter.
+- To cancel a meeting, use cancel_booking with the booking ID from the UPCOMING MEETINGS list.
 
 CURRENT AVAILABILITY RULES:
-{current_rules_summary}{links_section}"""
+{current_rules_summary}
+
+UPCOMING MEETINGS:
+{upcoming_bookings_summary if upcoming_bookings_summary else "No upcoming meetings."}{links_section}"""

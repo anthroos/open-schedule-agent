@@ -296,6 +296,15 @@ class Database:
         ).fetchall()
         return [self._row_to_booking(row) for row in rows]
 
+    def get_upcoming_bookings(self, limit: int = 20) -> list[Booking]:
+        """Get future bookings ordered by start time (excludes placeholder rows)."""
+        now = datetime.now().isoformat()
+        rows = self.conn.execute(
+            "SELECT * FROM bookings WHERE slot_end > ? AND guest_name != '' ORDER BY slot_start ASC LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [self._row_to_booking(row) for row in rows]
+
     def get_booking_by_id(self, booking_id: str) -> Booking | None:
         """Get a single booking by ID."""
         row = self.conn.execute(

@@ -155,4 +155,26 @@ OWNER_TOOLS = [
             "required": ["timezone"],
         },
     },
+    {
+        "name": "show_bookings",
+        "description": "Show the owner's upcoming booked meetings with guest details. Use when the owner asks about their schedule, upcoming meetings, or who they're meeting with.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "cancel_booking",
+        "description": "Cancel a booked meeting by its booking ID. Removes from database and deletes the Google Calendar event. Use when the owner wants to cancel a specific meeting.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "booking_id": {
+                    "type": "string",
+                    "description": "The booking ID to cancel (shown in booking list).",
+                },
+            },
+            "required": ["booking_id"],
+        },
+    },
 ]

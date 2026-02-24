@@ -142,6 +142,28 @@ class SchedulingEngine:
         logger.info("Timezone changed to %s by owner", new_tz)
         return OutgoingMessage(text=f"Timezone changed to {new_tz} ({offset_fmt})")
 
+    def _format_upcoming_bookings(self) -> str:
+        """Format upcoming bookings for display to owner."""
+        from zoneinfo import ZoneInfo
+        bookings = self.db.get_upcoming_bookings()
+        if not bookings:
+            return "No upcoming meetings."
+        tz = ZoneInfo(self.availability.config.timezone)
+        lines = ["Upcoming meetings:"]
+        for b in bookings:
+            start_local = b.slot.start.astimezone(tz)
+            end_local = b.slot.end.astimezone(tz)
+            day_str = start_local.strftime("%a %b %d")
+            time_str = f"{start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')}"
+            line = f"  {day_str}, {time_str} — {b.guest_name}"
+            if b.guest_email:
+                line += f" ({b.guest_email})"
+            if b.topic:
+                line += f", topic: {b.topic}"
+            line += f" [ID: {b.id}]"
+            lines.append(line)
+        return "\n".join(lines)
+
     async def handle_message(self, msg: IncomingMessage) -> OutgoingMessage:
         """Process an incoming message. Routes to owner or guest flow."""
         if self._is_owner(msg.channel, msg.sender_id):
@@ -237,6 +259,9 @@ class SchedulingEngine:
         if text_lower.startswith("/timezone"):
             return self._handle_timezone_command(msg.text.strip())
 
+        if text_lower in ("/bookings", "/meetings"):
+            return OutgoingMessage(text=self._format_upcoming_bookings())
+
         # Get or create conversation
         conv = self.db.get_conversation(msg.sender_id)
         if not conv:
@@ -264,10 +289,12 @@ class SchedulingEngine:
     async def _handle_owner_message_tools(self, conv: Conversation) -> str:
         """Owner mode via Anthropic tool use. Returns clean text for user."""
         rules_summary = self.db.format_availability_summary()
+        bookings_summary = self._format_upcoming_bookings()
         system_prompt = build_owner_prompt_tools(
             owner_name=self.config.owner.name,
             current_rules_summary=rules_summary,
             booking_links=self.config.booking_links.links,
+            upcoming_bookings_summary=bookings_summary,
         )
 
         # Build API messages from conversation (only user/assistant text)
@@ -290,7 +317,7 @@ class SchedulingEngine:
             # Execute each tool call and collect results
             tool_results = []
             for tc in result.tool_calls:
-                output = self._execute_tool(tc.name, tc.input)
+                output = await self._execute_tool(tc.name, tc.input)
                 tool_results.append({"tool_use_id": tc.id, "content": output})
                 logger.info(f"Tool {tc.name}({tc.input}) → {output}")
 
@@ -383,7 +410,7 @@ class SchedulingEngine:
                 return f"Start time {start} must be before end time {end}."
         return None
 
-    def _execute_tool(self, name: str, params: dict) -> str:
+    async def _execute_tool(self, name: str, params: dict) -> str:
         """Execute a single owner tool call. Returns result text."""
         if name == "add_rule":
             err = self._validate_rule_params(params)
@@ -446,6 +473,29 @@ class SchedulingEngine:
             offset_fmt = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
             logger.info("Timezone changed to %s via LLM tool", new_tz)
             return f"Timezone changed to {new_tz} ({offset_fmt})"
+
+        if name == "show_bookings":
+            return self._format_upcoming_bookings()
+
+        if name == "cancel_booking":
+            booking_id = params.get("booking_id", "").strip()
+            if not booking_id:
+                return "Error: booking_id is required."
+            booking = self.db.get_booking_by_id(booking_id)
+            if not booking:
+                return f"Booking {booking_id} not found."
+            # Delete calendar event
+            calendar_deleted = False
+            if booking.calendar_event_id and booking.calendar_event_id != "dry-run":
+                try:
+                    await self.calendar.delete_event(booking.calendar_event_id)
+                    calendar_deleted = True
+                except Exception as e:
+                    logger.warning("Could not delete calendar event %s: %s", booking.calendar_event_id, e)
+            self.db.delete_booking(booking_id)
+            logger.info("Owner cancelled booking %s (%s)", booking_id, booking.guest_name)
+            note = " Calendar event removed." if calendar_deleted else ""
+            return f"Cancelled meeting with {booking.guest_name} ({booking.slot}).{note}"
 
         return f"Unknown tool: {name}"
 
