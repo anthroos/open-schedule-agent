@@ -272,30 +272,7 @@ class WebAdapter(ChannelAdapter):
 
         @app.get("/api/health")
         async def health():
-            import os
-            db_path = adapter.db.db_path if adapter.db else "unknown"
-            db_exists = os.path.exists(db_path) if db_path != "unknown" else False
-            db_writable = os.access(db_path, os.W_OK) if db_exists else False
-            dir_path = os.path.dirname(os.path.abspath(db_path))
-            dir_writable = os.access(dir_path, os.W_OK)
-            return {
-                "status": "ok",
-                "db_path": db_path,
-                "db_exists": db_exists,
-                "db_writable": db_writable,
-                "dir_writable": dir_writable,
-                "cwd": os.getcwd(),
-                "uid": os.getuid(),
-            }
-
-        @app.get("/api/debug/bookings")
-        async def debug_bookings(request: Request):
-            """Temporary debug endpoint — list all bookings in DB."""
-            check_api_key(request)
-            rows = adapter.db.conn.execute(
-                "SELECT id, guest_name, slot_start, slot_end, calendar_event_id FROM bookings ORDER BY slot_start"
-            ).fetchall()
-            return [dict(r) for r in rows]
+            return {"status": "ok"}
 
         # --- Self-service cancel ---
 
