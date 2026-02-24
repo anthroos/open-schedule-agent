@@ -10,11 +10,11 @@ Deploy an always-on endpoint. Any AI agent discovers you via `agent.json`, check
 
 ```
 Guest: "Hi, I'd like to schedule a call"
-Bot:   "Sure! What's your name, email, and topic?"
-Guest: "Maria, maria@corp.com, about partnership"
-Bot:   "Got it! Here are available slots: ..."
-Guest: "Slot 3"
-Bot:   "Confirmed! Meeting with Ivan on Thu 14:00. Google Meet link: ..."
+Bot:   "Sure! What's your name, and where are you located?"
+Guest: "Maria from Kyiv, maria@corp.com, about partnership"
+Bot:   "Got it! Here are available slots in Kyiv time: ..."
+Guest: "Wednesday at 13:00"
+Bot:   "Confirmed! Wed Mar 04 at 13:00 Kyiv time. Calendar invite sent!"
 ```
 
 ## Features
@@ -25,10 +25,13 @@ Bot:   "Confirmed! Meeting with Ivan on Thu 14:00. Google Meet link: ..."
 - **Multi-LLM** — Anthropic Claude, OpenAI GPT, or local Ollama (auto-detected)
 - **Multi-channel** — Telegram, Slack, Discord, Web API
 - **Google Calendar** — freebusy check + event creation + Google Meet links
-- **Reminders** — automatic reminders before meetings with cancel links
+- **Booking management** — owner views upcoming meetings, cancels from chat (`/bookings`)
+- **Dynamic timezone** — owner changes timezone at runtime (`/timezone` or via chat)
+- **Guest timezone** — asks guest's city, shows slots in their local time, stores timezone with booking
+- **Dual-TZ notifications** — owner sees both their time and guest's time in booking alerts
+- **Reminders** — automatic reminders before meetings with self-service cancel links
 - **Security** — rate limiting, prompt injection detection, input sanitization
 - **Retry with backoff** — all external API calls protected against transient failures
-- **Guest timezone** — shows slots in the guest's local time
 
 ## Quick start
 
@@ -199,7 +202,7 @@ calendar:
 
 llm:
   provider: "anthropic"     # anthropic | openai | ollama (auto-detected)
-  model: "claude-haiku-4-20250414"
+  model: "claude-sonnet-4-20250514"
 
 channels:
   telegram:
@@ -250,12 +253,30 @@ Owners manage their schedule by chatting:
 Owner: "Add Monday 10-18"
 Bot:   "Added availability: Monday 10:00-18:00"
 
+Owner: "Delete Monday 14:00-15:00"
+Bot:   "Deleted rule: monday 14:00-15:00"
+
 Owner: "Block Saturday"
 Bot:   "Blocked: Saturday (all day)"
 
-Owner: "/schedule"
-Bot:   "Monday: 10:00-18:00, Tuesday: 09:00-13:30, ..."
+Owner: "What meetings do I have?"
+Bot:   "You have 2 upcoming meetings:
+        Mon Mar 02, 19:00-19:30 — Alex (alex@example.com) [11:00 London]
+        Wed Mar 04, 19:00-19:30 — Maria (maria@corp.com) [13:00 Kyiv]"
+
+Owner: "Cancel meeting with Alex"
+Bot:   "Cancelled meeting with Alex. Calendar event removed."
 ```
+
+**Quick commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Show bot intro, current rules, and upcoming meetings |
+| `/schedule` | Show availability rules |
+| `/bookings` | Show upcoming meetings |
+| `/timezone` | Show or change timezone |
+| `/clear` | Clear all availability rules |
 
 ## Web API
 
