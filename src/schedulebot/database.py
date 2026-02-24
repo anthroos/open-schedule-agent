@@ -238,7 +238,9 @@ class Database:
                 )
                 self.conn.execute("COMMIT")
                 return True
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("reserve_slot failed: %s", e, exc_info=True)
                 try:
                     self.conn.execute("ROLLBACK")
                 except Exception:
