@@ -52,6 +52,7 @@ def create_mcp_server(
         f"Timezone: {config.availability.timezone}. "
         f"Use get_available_slots() to see open times, then book_consultation() to book.",
         streamable_http_path="/",
+        host="0.0.0.0",  # Disable auto DNS rebinding protection (runs behind reverse proxy)
     )
 
     tz = ZoneInfo(config.availability.timezone)

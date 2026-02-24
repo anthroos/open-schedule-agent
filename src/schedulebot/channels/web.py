@@ -393,8 +393,11 @@ class WebAdapter(ChannelAdapter):
             )
 
         # --- MCP Server mount (public — agents must be able to discover and book) ---
-        if adapter.mcp_app:
-            app.mount(adapter.mcp_path, adapter.mcp_app)
+        # Mount the raw ASGI handler, not the full Starlette sub-app,
+        # because the parent lifespan manages the session manager lifecycle.
+        if adapter.mcp_server:
+            sm = adapter.mcp_server.session_manager
+            app.mount(adapter.mcp_path, sm.handle_request)
             logger.info(f"MCP server mounted at {adapter.mcp_path} (public, no auth)")
 
         # --- Discovery ---
