@@ -270,8 +270,21 @@ class SchedulingEngine:
 
         if text_lower in ("/start", "/cancel"):
             self.db.delete_conversation(msg.sender_id)
-            conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
-            conv._mode = "owner"
+            bookings_text = self._format_upcoming_bookings()
+            rules_text = self.db.format_availability_summary()
+            tz_name = self.availability.config.timezone
+            intro = (
+                f"Schedule management bot for {self.config.owner.name}.\n"
+                f"Timezone: {tz_name}\n\n"
+                f"Commands:\n"
+                f"  /schedule — availability rules\n"
+                f"  /bookings — upcoming meetings\n"
+                f"  /timezone — show/change timezone\n"
+                f"  /clear — clear all rules\n\n"
+                f"{rules_text}\n\n"
+                f"{bookings_text}"
+            )
+            return OutgoingMessage(text=intro)
 
         conv.add_message("user", msg.text)
 
