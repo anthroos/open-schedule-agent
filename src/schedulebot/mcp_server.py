@@ -51,7 +51,7 @@ def create_mcp_server(
         instructions=f"Schedule meetings with {config.owner.name}. "
         f"Timezone: {config.availability.timezone}. "
         f"Use get_available_slots() to see open times, then book_consultation() to book.",
-        streamable_http_path="/",
+        streamable_http_path="/mcp",
     )
 
     tz = ZoneInfo(config.availability.timezone)
