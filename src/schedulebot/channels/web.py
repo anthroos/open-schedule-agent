@@ -379,43 +379,10 @@ class WebAdapter(ChannelAdapter):
                 headers={"Referrer-Policy": "no-referrer"},
             )
 
-        # --- MCP Server mount (with optional Bearer token auth) ---
+        # --- MCP Server mount (public — agents must be able to discover and book) ---
         if adapter.mcp_app:
-            if adapter.api_key:
-                from starlette.middleware import Middleware
-                from starlette.responses import JSONResponse
-
-                _inner_mcp = adapter.mcp_app
-
-                async def mcp_auth_middleware(request: Request, call_next):
-                    """Require Bearer token for MCP endpoints (skip health-like GETs)."""
-                    auth = request.headers.get("authorization", "")
-                    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
-                    if not token or not hmac.compare_digest(token, adapter.api_key):
-                        return JSONResponse(
-                            {"error": "MCP endpoint requires authentication. Set Authorization: Bearer <API_KEY>."},
-                            status_code=401,
-                        )
-                    return await call_next(request)
-
-                from starlette.middleware.base import BaseHTTPMiddleware
-
-                class MCPAuthMiddleware(BaseHTTPMiddleware):
-                    async def dispatch(self, request, call_next):
-                        return await mcp_auth_middleware(request, call_next)
-
-                from fastapi import FastAPI as _FA
-                mcp_wrapper = _FA()
-                mcp_wrapper.add_middleware(MCPAuthMiddleware)
-                mcp_wrapper.mount("/", _inner_mcp)
-                app.mount(adapter.mcp_path, mcp_wrapper)
-            else:
-                app.mount(adapter.mcp_path, adapter.mcp_app)
-                logger.warning(
-                    "MCP server mounted WITHOUT authentication. "
-                    "Set SCHEDULEBOT_API_KEY to require Bearer token."
-                )
-            logger.info(f"MCP server mounted at {adapter.mcp_path}")
+            app.mount(adapter.mcp_path, adapter.mcp_app)
+            logger.info(f"MCP server mounted at {adapter.mcp_path} (public, no auth)")
 
         # --- Discovery ---
         @app.get("/.well-known/mcp.json")
