@@ -264,6 +264,7 @@ async def _run_bot(config) -> None:
             agent_card=config.agent_card,
             calendar=calendar,
             notifier_holder=_mcp_notifier_holder,
+            services=config.services,
         )
         if adapter:
             adapters.append(adapter)
@@ -397,7 +398,7 @@ def _build_llm(config):
 
 def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_path="/mcp",
                    owner_name="Owner", owner_email="", agent_card=None,
-                   calendar=None, notifier_holder=None):
+                   calendar=None, notifier_holder=None, services=None):
     """Build channel adapter by name."""
     if name == "telegram":
         from .channels.telegram import TelegramAdapter
@@ -406,7 +407,8 @@ def _build_channel(name, config_extra, on_message, db=None, mcp_app=None, mcp_pa
         from .channels.web import WebAdapter
         return WebAdapter(config_extra, on_message, db=db, mcp_app=mcp_app, mcp_path=mcp_path,
                           owner_name=owner_name, owner_email=owner_email, agent_card=agent_card,
-                          calendar=calendar, notifier_holder=notifier_holder)
+                          calendar=calendar, notifier_holder=notifier_holder,
+                          services=services)
     elif name == "slack":
         from .channels.slack import SlackAdapter
         return SlackAdapter(config_extra, on_message)

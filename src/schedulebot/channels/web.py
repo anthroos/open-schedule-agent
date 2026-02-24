@@ -38,6 +38,7 @@ class WebAdapter(ChannelAdapter):
         agent_card=None,
         calendar=None,
         notifier_holder=None,
+        services=None,
     ):
         super().__init__(config, on_message)
         self.host = config.get("host", "0.0.0.0")
@@ -55,6 +56,7 @@ class WebAdapter(ChannelAdapter):
         self.agent_card = agent_card
         self.calendar = calendar
         self.notifier_holder = notifier_holder  # [notifier] mutable list for late binding
+        self.services = services or []
         self._server = None
 
     @property
@@ -261,7 +263,7 @@ class WebAdapter(ChannelAdapter):
 
         # --- Self-service cancel ---
 
-        from fastapi.responses import HTMLResponse
+        from fastapi.responses import HTMLResponse, Response
         import hashlib
         import secrets as _secrets
 
@@ -467,6 +469,178 @@ class WebAdapter(ChannelAdapter):
                 result["url"] = card.url
 
             return result
+
+        # --- Agent Card landing page & QR code ---
+
+        @app.get("/agent", response_class=HTMLResponse)
+        async def agent_page():
+            """Human-readable agent business card page."""
+            card = adapter.agent_card
+            if not card or not card.enabled:
+                return HTMLResponse(
+                    "<html><body style='font-family:sans-serif;max-width:600px;"
+                    "margin:40px auto;padding:0 20px'>"
+                    "<h1>Not Available</h1>"
+                    "<p>Agent card is not enabled for this instance.</p>"
+                    "</body></html>",
+                    status_code=404,
+                )
+
+            base_url = card.url or f"http://{adapter.host}:{adapter.port}"
+            safe_name = html.escape(adapter.owner_name)
+            safe_desc = html.escape(
+                card.description or f"Scheduling agent for {adapter.owner_name}"
+            )
+            safe_org = html.escape(card.organization) if card.organization else ""
+            mcp_url = f"{base_url}{adapter.mcp_path}"
+            safe_mcp = html.escape(mcp_url)
+
+            # Services section
+            services_html = ""
+            if adapter.services:
+                items = ""
+                for s in adapter.services:
+                    sname = html.escape(s.name or s.slug)
+                    sdur = s.duration_minutes
+                    sprice = "Free" if s.price == 0 else f"{s.currency} {s.price:.2f}"
+                    items += f"<li><strong>{sname}</strong> &mdash; {sdur} min, {sprice}</li>"
+                services_html = f"<h2>Services</h2><ul>{items}</ul>"
+
+            # QR section (only if library installed)
+            qr_html = ""
+            try:
+                import qrcode as _qr  # noqa: F401
+                qr_html = (
+                    '<div class="qr">'
+                    '<img src="/agent/qr" alt="QR Code" width="200" height="200">'
+                    '<p class="dim">Scan to open this page</p>'
+                    "</div>"
+                )
+            except ImportError:
+                pass
+
+            # MCP config slug
+            slug = re.sub(r"[^a-z0-9]+", "-", adapter.owner_name.lower()).strip("-")
+            mcp_snippet = (
+                '{\n'
+                '  "mcpServers": {\n'
+                f'    "{html.escape(slug)}-schedule": {{\n'
+                f'      "url": "{safe_mcp}"\n'
+                '    }\n'
+                '  }\n'
+                '}'
+            )
+
+            prompt_snippet = (
+                f"Name: {safe_name}\n"
+                f"MCP: {safe_mcp}"
+            )
+
+            page = (
+                "<!DOCTYPE html>\n<html lang='en'><head>"
+                "<meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>{safe_name} &mdash; Agent Card</title>"
+                "<style>"
+                "*{margin:0;padding:0;box-sizing:border-box}"
+                "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+                "max-width:600px;margin:40px auto;padding:0 20px;color:#1a1a1a;line-height:1.6}"
+                "h1{font-size:1.8em;margin-bottom:4px}"
+                "h2{font-size:1.2em;margin:24px 0 8px;color:#444}"
+                ".org{color:#666;font-size:0.95em}"
+                ".desc{margin:12px 0 20px}"
+                ".dim{color:#888;font-size:0.9em}"
+                "ul{padding-left:20px}li{margin:6px 0}"
+                ".snippet{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;"
+                "padding:12px 16px;margin:8px 0 16px;font-family:'SF Mono','Fira Code',"
+                "monospace;font-size:0.85em;white-space:pre-wrap;word-break:break-all;"
+                "position:relative}"
+                ".copy-btn{position:absolute;top:8px;right:8px;background:#fff;"
+                "border:1px solid #ccc;border-radius:4px;padding:4px 10px;"
+                "cursor:pointer;font-size:0.8em}"
+                ".copy-btn:hover{background:#eee}"
+                ".qr{text-align:center;margin:24px 0}"
+                ".qr img{border:1px solid #eee;border-radius:8px}"
+                "a{color:#0066cc;text-decoration:none}a:hover{text-decoration:underline}"
+                ".links{margin:20px 0}.links a{display:inline-block;margin-right:16px}"
+                "hr{border:none;border-top:1px solid #eee;margin:24px 0}"
+                "</style></head><body>"
+                f"<h1>{safe_name}</h1>"
+                + (f"<p class='org'>{safe_org}</p>" if safe_org else "")
+                + f"<p class='desc'>{safe_desc}</p>"
+                + services_html
+                + "<h2>Add to your AI agent</h2>"
+                f"<div class='snippet' id='prompt-snippet'>{prompt_snippet}"
+                "<button class='copy-btn' onclick=\"copyEl('prompt-snippet')\">Copy</button></div>"
+                "<h2>Claude Code / Cursor config</h2>"
+                f"<div class='snippet' id='mcp-snippet'>{mcp_snippet}"
+                "<button class='copy-btn' onclick=\"copyEl('mcp-snippet')\">Copy</button></div>"
+                + qr_html
+                + "<hr><div class='links'>"
+                "<a href='/.well-known/agent.json'>agent.json</a>"
+                "<a href='/.well-known/mcp.json'>mcp.json</a>"
+                "</div>"
+                "<script>"
+                "function copyEl(id){"
+                "var el=document.getElementById(id);"
+                "var btn=el.querySelector('.copy-btn');"
+                "var t=el.textContent.replace(btn.textContent,'').trim();"
+                "navigator.clipboard.writeText(t).then(function(){"
+                "btn.textContent='Copied!';"
+                "setTimeout(function(){btn.textContent='Copy'},1500)"
+                "}).catch(function(){"
+                "var a=document.createElement('textarea');a.value=t;"
+                "document.body.appendChild(a);a.select();"
+                "document.execCommand('copy');document.body.removeChild(a);"
+                "btn.textContent='Copied!';"
+                "setTimeout(function(){btn.textContent='Copy'},1500)"
+                "})}"
+                "</script></body></html>"
+            )
+            return HTMLResponse(page)
+
+        @app.get("/agent/qr")
+        async def agent_qr():
+            """QR code image pointing to the agent card page."""
+            card = adapter.agent_card
+            if not card or not card.enabled:
+                raise HTTPException(status_code=404, detail="Agent card is not enabled")
+
+            try:
+                import qrcode
+                from io import BytesIO
+            except ImportError:
+                raise HTTPException(
+                    status_code=501,
+                    detail="QR code requires qrcode[pil]. "
+                    "Install: pip install 'schedulebot[agent-card]'",
+                )
+
+            base_url = card.url or f"http://{adapter.host}:{adapter.port}"
+            target_url = f"{base_url}/agent"
+
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(target_url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+
+            return Response(
+                content=buf.getvalue(),
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "public, max-age=3600",
+                    "Content-Disposition": 'inline; filename="agent-qr.png"',
+                },
+            )
 
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)
