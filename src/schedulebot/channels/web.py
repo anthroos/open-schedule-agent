@@ -277,7 +277,7 @@ class WebAdapter(ChannelAdapter):
         @app.get("/api/debug/bookings")
         async def debug_bookings(request: Request):
             """Temporary debug endpoint — list all bookings in DB."""
-            _check_api_key(request)
+            check_api_key(request)
             rows = adapter.db.conn.execute(
                 "SELECT id, guest_name, slot_start, slot_end, calendar_event_id FROM bookings ORDER BY slot_start"
             ).fetchall()
