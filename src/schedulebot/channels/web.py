@@ -380,11 +380,9 @@ class WebAdapter(ChannelAdapter):
             )
 
         # --- MCP Server mount (public — agents must be able to discover and book) ---
-        # Mount at root so FastMCP's internal route ("/mcp") matches directly.
-        # Starlette mount strips prefix, so mount("") preserves the full path.
         if adapter.mcp_app:
-            app.mount("", adapter.mcp_app)
-            logger.info(f"MCP server available at {adapter.mcp_path} (public, no auth)")
+            app.mount(adapter.mcp_path, adapter.mcp_app)
+            logger.info(f"MCP server mounted at {adapter.mcp_path} (public, no auth)")
 
         # --- Discovery ---
         @app.get("/.well-known/mcp.json")
