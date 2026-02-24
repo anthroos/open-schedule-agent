@@ -1,11 +1,18 @@
 services:
   schedulebot:
     build: .
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
     volumes:
-      - ./config.yaml:/app/config.yaml
-      - ./.env:/app/.env
       - ./token.json:/app/token.json
+      - ./credentials.json:/app/credentials.json
       - ./data:/app/data
     env_file:
       - .env
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-8080}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

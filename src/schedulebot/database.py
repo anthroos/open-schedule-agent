@@ -177,6 +177,18 @@ class Database:
             self.conn.execute("DELETE FROM conversations WHERE sender_id = ?", (sender_id,))
             self.conn.commit()
 
+    def cleanup_stale_conversations(self, max_age_hours: int = 24) -> int:
+        """Delete conversations older than max_age_hours. Returns count deleted."""
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        with self._lock:
+            cursor = self.conn.execute(
+                "DELETE FROM conversations WHERE updated_at < ?",
+                (cutoff.isoformat(),),
+            )
+            self.conn.commit()
+            return cursor.rowcount
+
     # --- Bookings ---
 
     def save_booking(self, booking: Booking) -> None:

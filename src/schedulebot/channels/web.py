@@ -20,6 +20,7 @@ WEB_RATE_LIMIT = 20  # max requests per window
 WEB_RATE_WINDOW = 60  # seconds
 WEB_RATE_LIMITER_MAX_KEYS = 10000
 MAX_SENDER_ID_LENGTH = 64
+MAX_TEXT_LENGTH = 500
 
 
 class WebAdapter(ChannelAdapter):
@@ -102,7 +103,13 @@ class WebAdapter(ChannelAdapter):
         def check_rate_limit(request: Request):
             """Per-IP rate limiting for public endpoints."""
             global _web_rate_limiter_cleanup_counter
-            client_ip = request.client.host if request.client else "unknown"
+            # Use X-Forwarded-For when behind a reverse proxy, fall back to direct IP
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                # Take the first (leftmost) IP — the original client
+                client_ip = forwarded.split(",")[0].strip()
+            else:
+                client_ip = request.client.host if request.client else "unknown"
             now = time.time()
             history = _web_rate_limiter.get(client_ip, [])
             history = [t for t in history if now - t < WEB_RATE_WINDOW]
@@ -138,9 +145,11 @@ class WebAdapter(ChannelAdapter):
         @app.post("/api/message", response_model=MessageResponse)
         async def handle_message(req: MessageRequest, request: Request):
             check_rate_limit(request)
-            # Validate sender_id length to prevent storage abuse
+            # Validate input lengths to prevent abuse
             if len(req.sender_id) > MAX_SENDER_ID_LENGTH:
                 raise HTTPException(status_code=400, detail="sender_id too long")
+            if len(req.text) > MAX_TEXT_LENGTH:
+                raise HTTPException(status_code=400, detail=f"Message too long (max {MAX_TEXT_LENGTH} characters)")
             # Prevent owner impersonation via unauthenticated web endpoint:
             # prefix sender_id to ensure it never matches owner_ids.web
             safe_sender_id = f"web:{req.sender_id}"
@@ -328,9 +337,42 @@ class WebAdapter(ChannelAdapter):
                 headers={"Referrer-Policy": "no-referrer"},
             )
 
-        # --- MCP Server mount ---
+        # --- MCP Server mount (with optional Bearer token auth) ---
         if adapter.mcp_app:
-            app.mount(adapter.mcp_path, adapter.mcp_app)
+            if adapter.api_key:
+                from starlette.middleware import Middleware
+                from starlette.responses import JSONResponse
+
+                _inner_mcp = adapter.mcp_app
+
+                async def mcp_auth_middleware(request: Request, call_next):
+                    """Require Bearer token for MCP endpoints (skip health-like GETs)."""
+                    auth = request.headers.get("authorization", "")
+                    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+                    if not token or not hmac.compare_digest(token, adapter.api_key):
+                        return JSONResponse(
+                            {"error": "MCP endpoint requires authentication. Set Authorization: Bearer <API_KEY>."},
+                            status_code=401,
+                        )
+                    return await call_next(request)
+
+                from starlette.middleware.base import BaseHTTPMiddleware
+
+                class MCPAuthMiddleware(BaseHTTPMiddleware):
+                    async def dispatch(self, request, call_next):
+                        return await mcp_auth_middleware(request, call_next)
+
+                from fastapi import FastAPI as _FA
+                mcp_wrapper = _FA()
+                mcp_wrapper.add_middleware(MCPAuthMiddleware)
+                mcp_wrapper.mount("/", _inner_mcp)
+                app.mount(adapter.mcp_path, mcp_wrapper)
+            else:
+                app.mount(adapter.mcp_path, adapter.mcp_app)
+                logger.warning(
+                    "MCP server mounted WITHOUT authentication. "
+                    "Set SCHEDULEBOT_API_KEY to require Bearer token."
+                )
             logger.info(f"MCP server mounted at {adapter.mcp_path}")
 
         # --- Discovery ---

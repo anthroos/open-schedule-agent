@@ -1,57 +1,68 @@
 #!/bin/sh
 # Generate config.yaml from environment variables at runtime.
-# This avoids baking secrets into the Docker image.
+# Uses Python + yaml.safe_dump to prevent shell injection via env vars.
 
-cat > /app/config.yaml <<YAML
-owner:
-  name: "${OWNER_NAME:-Owner}"
-  email: "${OWNER_EMAIL:-}"
-  owner_ids:
-    telegram: "${OWNER_TELEGRAM_ID:-}"
-    web: "owner"
+python3 -c "
+import os, yaml
 
-availability:
-  timezone: "${TIMEZONE:-UTC}"
-  meeting_duration_minutes: ${MEETING_DURATION:-30}
-  buffer_minutes: ${BUFFER_MINUTES:-15}
-  min_notice_hours: ${MIN_NOTICE_HOURS:-4}
-  max_days_ahead: ${MAX_DAYS_AHEAD:-14}
+config = {
+    'owner': {
+        'name': os.environ.get('OWNER_NAME', 'Owner'),
+        'email': os.environ.get('OWNER_EMAIL', ''),
+        'owner_ids': {
+            'telegram': os.environ.get('OWNER_TELEGRAM_ID', ''),
+            'web': 'owner',
+        },
+    },
+    'availability': {
+        'timezone': os.environ.get('TIMEZONE', 'UTC'),
+        'meeting_duration_minutes': int(os.environ.get('MEETING_DURATION', '30')),
+        'buffer_minutes': int(os.environ.get('BUFFER_MINUTES', '15')),
+        'min_notice_hours': int(os.environ.get('MIN_NOTICE_HOURS', '4')),
+        'max_days_ahead': int(os.environ.get('MAX_DAYS_AHEAD', '14')),
+    },
+    'calendar': {
+        'provider': 'google',
+        'create_meet_link': True,
+        'credentials_path': 'credentials.json',
+        'token_path': 'token.json',
+    },
+    'llm': {
+        'provider': os.environ.get('LLM_PROVIDER', 'anthropic'),
+        'model': os.environ.get('LLM_MODEL', 'claude-haiku-4-20250414'),
+    },
+    'channels': {
+        'telegram': {
+            'enabled': True,
+            'bot_token': os.environ.get('TELEGRAM_BOT_TOKEN', ''),
+        },
+        'web': {
+            'enabled': os.environ.get('WEB_ENABLED', 'true').lower() in ('true', '1', 'yes'),
+            'host': '0.0.0.0',
+            'port': int(os.environ.get('PORT', '8080')),
+            'api_key': os.environ.get('SCHEDULEBOT_API_KEY', ''),
+            'allowed_origins': [o.strip() for o in os.environ.get('CORS_ORIGINS', '').split(',') if o.strip()],
+        },
+    },
+    'notifications': {
+        'channel': 'telegram',
+        'owner_id': os.environ.get('OWNER_TELEGRAM_ID', ''),
+    },
+    'mcp': {
+        'enabled': os.environ.get('MCP_ENABLED', 'true').lower() in ('true', '1', 'yes'),
+        'transport': 'streamable-http',
+        'path': '/mcp',
+    },
+    'agent_card': {
+        'enabled': os.environ.get('AGENT_CARD_ENABLED', 'true').lower() in ('true', '1', 'yes'),
+        'url': os.environ.get('PUBLIC_URL', ''),
+        'description': os.environ.get('AGENT_DESCRIPTION', ''),
+        'organization': os.environ.get('AGENT_ORGANIZATION', ''),
+    },
+}
 
-calendar:
-  provider: "google"
-  create_meet_link: true
-  credentials_path: "credentials.json"
-  token_path: "token.json"
-
-llm:
-  provider: "${LLM_PROVIDER:-anthropic}"
-  model: "${LLM_MODEL:-claude-haiku-4-20250414}"
-
-channels:
-  telegram:
-    enabled: true
-    bot_token: "${TELEGRAM_BOT_TOKEN}"
-  web:
-    enabled: ${WEB_ENABLED:-true}
-    host: "0.0.0.0"
-    port: ${PORT:-8080}
-    api_key: "${SCHEDULEBOT_API_KEY:-}"
-    allowed_origins: [${CORS_ORIGINS:-}]
-
-notifications:
-  channel: "telegram"
-  owner_id: "${OWNER_TELEGRAM_ID:-}"
-
-mcp:
-  enabled: ${MCP_ENABLED:-true}
-  transport: "streamable-http"
-  path: "/mcp"
-
-agent_card:
-  enabled: ${AGENT_CARD_ENABLED:-true}
-  url: "${PUBLIC_URL:-}"
-  description: "${AGENT_DESCRIPTION:-}"
-  organization: "${AGENT_ORGANIZATION:-}"
-YAML
+with open('/app/config.yaml', 'w') as f:
+    yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True)
+"
 
 exec "$@"

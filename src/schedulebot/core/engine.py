@@ -49,11 +49,21 @@ EMAIL_RE = re.compile(
 )
 INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+    re.compile(r"disregard\s+(all\s+)?(previous|prior|above)\s+", re.IGNORECASE),
+    re.compile(r"forget\s+(all\s+)?(previous|prior|your)\s+", re.IGNORECASE),
     re.compile(r"you\s+are\s+now\s+(a|an)\s+", re.IGNORECASE),
+    re.compile(r"act\s+as\s+(a|an|if)\s+", re.IGNORECASE),
+    re.compile(r"pretend\s+(you\s+are|to\s+be)\s+", re.IGNORECASE),
+    re.compile(r"new\s+instructions?\s*:", re.IGNORECASE),
     re.compile(r"system\s*:\s*", re.IGNORECASE),
     re.compile(r"<\s*/?system\s*>", re.IGNORECASE),
     re.compile(r"\[INST\]", re.IGNORECASE),
     re.compile(r"<<\s*SYS\s*>>", re.IGNORECASE),
+    re.compile(r"<\|im_start\|>", re.IGNORECASE),
+    re.compile(r"Human\s*:\s*", re.IGNORECASE),
+    re.compile(r"Assistant\s*:\s*", re.IGNORECASE),
+    re.compile(r"\[BOOK:\d+\]"),  # prevent forging booking tags
+    re.compile(r"\[(ADD_RULE|BLOCK_RULE|CLEAR_RULES|CLEAR_ALL|SHOW_RULES)", re.IGNORECASE),
 ]
 
 # In-memory rate limiter: sender_id -> list of timestamps
@@ -654,7 +664,8 @@ class SchedulingEngine:
                 else:
                     tz_info = f" (could not resolve timezone for '{city}' — slots shown in owner timezone)"
 
-            logger.info("Guest info collected: name=%s tz=%s", guest_name, conv.guest_timezone)
+            _masked_email = guest_email.split("@")[0][:2] + "***@" + guest_email.split("@")[-1] if "@" in guest_email else "***"
+            logger.info("Guest info collected: name=%s email=%s tz=%s", guest_name, _masked_email, conv.guest_timezone)
             return f"Saved: {guest_name}, {guest_email}" + (f", topic: {topic}" if topic else "") + tz_info
 
         if name == "confirm_booking":
