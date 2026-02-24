@@ -221,31 +221,18 @@ class Database:
     def reserve_slot(self, start: datetime, end: datetime, booking_id: str) -> bool:
         """Atomically check + reserve a slot. Returns True if reserved, False if already taken."""
         with self._lock:
-            try:
-                self.conn.execute("BEGIN EXCLUSIVE")
-                row = self.conn.execute(
-                    "SELECT COUNT(*) as cnt FROM bookings WHERE slot_start < ? AND slot_end > ?",
-                    (end.isoformat(), start.isoformat()),
-                ).fetchone()
-                if row["cnt"] > 0:
-                    self.conn.execute("ROLLBACK")
-                    return False
-                # Insert placeholder booking to hold the slot
-                self.conn.execute(
-                    "INSERT INTO bookings (id, guest_name, guest_channel, guest_sender_id, "
-                    "slot_start, slot_end, created_at) VALUES (?, '', '', '', ?, ?, ?)",
-                    (booking_id, start.isoformat(), end.isoformat(), datetime.now().isoformat()),
-                )
-                self.conn.execute("COMMIT")
-                return True
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error("reserve_slot failed: %s", e, exc_info=True)
-                try:
-                    self.conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-                return False
+            # Single atomic INSERT ... WHERE NOT EXISTS — no explicit transaction needed
+            cursor = self.conn.execute(
+                """INSERT INTO bookings (id, guest_name, guest_channel, guest_sender_id,
+                   slot_start, slot_end, created_at)
+                   SELECT ?, '', '', '', ?, ?, ?
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM bookings WHERE slot_start < ? AND slot_end > ?
+                   )""",
+                (booking_id, start.isoformat(), end.isoformat(), datetime.now().isoformat(),
+                 end.isoformat(), start.isoformat()),
+            )
+            return cursor.rowcount > 0
 
     def finalize_booking(self, booking: Booking) -> None:
         """Update a reserved (placeholder) booking with full details."""
