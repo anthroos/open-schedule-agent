@@ -158,6 +158,14 @@ class SchedulingEngine:
             line = f"  {day_str}, {time_str} — {b.guest_name}"
             if b.guest_email:
                 line += f" ({b.guest_email})"
+            if b.guest_timezone:
+                try:
+                    guest_tz = ZoneInfo(b.guest_timezone)
+                    guest_start = b.slot.start.astimezone(guest_tz)
+                    tz_short = b.guest_timezone.split("/")[-1].replace("_", " ")
+                    line += f" [{guest_start.strftime('%H:%M')} {tz_short}]"
+                except (KeyError, ValueError):
+                    pass
             if b.topic:
                 line += f", topic: {b.topic}"
             line += f" [ID: {b.id}]"
@@ -936,6 +944,7 @@ class SchedulingEngine:
                 slot=conv.selected_slot,
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
+                guest_timezone=conv.guest_timezone,
                 cancel_token=cancel_token,
             )
             if reservation_id:
@@ -966,6 +975,7 @@ class SchedulingEngine:
                 slot=conv.selected_slot,
                 calendar_event_id=event.get("event_id"),
                 meet_link=event.get("meet_link"),
+                guest_timezone=conv.guest_timezone,
                 cancel_token=cancel_token,
             )
             if reservation_id:

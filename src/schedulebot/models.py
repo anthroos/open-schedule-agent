@@ -94,6 +94,7 @@ class Booking:
     guest_email: str = ""
     topic: str = ""
     attendee_emails: list[str] = field(default_factory=list)
+    guest_timezone: str = ""
     notes: str = ""
     cancel_token: str = ""
     reminder_sent: bool = False

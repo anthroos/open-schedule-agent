@@ -82,6 +82,10 @@ MIGRATIONS = [
     [
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     ],
+    # Migration 6: Add guest_timezone to bookings
+    [
+        "ALTER TABLE bookings ADD COLUMN guest_timezone TEXT DEFAULT ''",
+    ],
 ]
 
 
@@ -201,8 +205,8 @@ class Database:
                 """INSERT INTO bookings
                 (id, guest_name, guest_channel, guest_sender_id, guest_email, topic,
                  attendee_emails, slot_start, slot_end,
-                 calendar_event_id, meet_link, notes, cancel_token, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 calendar_event_id, meet_link, notes, cancel_token, guest_timezone, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     booking.id,
                     booking.guest_name,
@@ -217,6 +221,7 @@ class Database:
                     booking.meet_link,
                     booking.notes,
                     booking.cancel_token,
+                    booking.guest_timezone,
                     booking.created_at.isoformat(),
                 ),
             )
@@ -244,7 +249,7 @@ class Database:
             self.conn.execute(
                 """UPDATE bookings SET guest_name=?, guest_channel=?, guest_sender_id=?,
                 guest_email=?, topic=?, attendee_emails=?, calendar_event_id=?,
-                meet_link=?, notes=?, cancel_token=? WHERE id=?""",
+                meet_link=?, notes=?, cancel_token=?, guest_timezone=? WHERE id=?""",
                 (
                     booking.guest_name,
                     booking.guest_channel,
@@ -256,6 +261,7 @@ class Database:
                     booking.meet_link,
                     booking.notes,
                     booking.cancel_token,
+                    booking.guest_timezone,
                     booking.id,
                 ),
             )
@@ -285,6 +291,7 @@ class Database:
             calendar_event_id=row["calendar_event_id"],
             meet_link=row["meet_link"],
             notes=row["notes"],
+            guest_timezone=row["guest_timezone"] if "guest_timezone" in keys else "",
             cancel_token=row["cancel_token"] if "cancel_token" in keys else "",
             reminder_sent=bool(row["reminder_sent"]) if "reminder_sent" in keys else False,
             created_at=datetime.fromisoformat(row["created_at"]),
