@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
@@ -14,7 +14,7 @@ RUN chmod +x /docker-entrypoint.sh
 
 RUN groupadd -r schedulebot && useradd -r -g schedulebot -d /app -s /sbin/nologin schedulebot \
     && mkdir -p /app/data && chown -R schedulebot:schedulebot /app
-USER schedulebot
+# USER is set in entrypoint after fixing volume permissions
 
 EXPOSE 8080
 

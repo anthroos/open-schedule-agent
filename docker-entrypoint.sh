@@ -1,4 +1,10 @@
 #!/bin/sh
+# Fix volume permissions (Railway mounts volumes as root)
+DB_DIR=$(dirname "${DATABASE_PATH:-/app/data/schedulebot.db}")
+mkdir -p "$DB_DIR" 2>/dev/null
+chown -R schedulebot:schedulebot "$DB_DIR" 2>/dev/null || true
+chown schedulebot:schedulebot /app/data 2>/dev/null || true
+
 # Generate config.yaml from environment variables at runtime.
 # Uses Python + yaml.safe_dump to prevent shell injection via env vars.
 
@@ -71,4 +77,5 @@ with open('/app/config.yaml', 'w') as f:
 # Ensure DATABASE_PATH points to the writable data dir
 export DATABASE_PATH="${DATABASE_PATH:-/app/data/schedulebot.db}"
 
-exec "$@"
+# Drop privileges to schedulebot user
+exec gosu schedulebot "$@"
