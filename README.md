@@ -224,6 +224,46 @@ agent_card:
 
 See [config.example.yaml](config.example.yaml) for all options.
 
+### Multi-Calendar
+
+You can connect multiple Google Calendar accounts so the bot checks availability across all of them while creating bookings in one designated calendar.
+
+**Roles:**
+- `book` — the calendar where bookings are created (exactly one required)
+- `watch` — read-only calendars used for availability checks; blocker events are created here when a booking is made
+
+**Setup:**
+
+1. For each Google account, create a separate OAuth credentials file in Google Cloud Console (same process as the [initial setup](docs/setup-google.md)). Name them distinctly, e.g. `credentials-work.json`, `credentials-personal.json`.
+
+2. Authorize each account by running `schedulebot check` with the corresponding credentials. This creates a `token-*.json` for each.
+
+3. Replace the `calendar:` section in `config.yaml` with a `calendars:` list:
+
+```yaml
+calendars:
+  - name: "Work"
+    calendar_id: "primary"
+    credentials_path: "credentials-work.json"
+    token_path: "token-work.json"
+    role: "book"
+    create_meet_link: true
+  - name: "Personal"
+    calendar_id: "primary"
+    credentials_path: "credentials-personal.json"
+    token_path: "token-personal.json"
+    role: "watch"
+    create_meet_link: false
+```
+
+4. Restart the bot.
+
+**Notes:**
+- The old single `calendar:` config still works — no changes needed if you use one calendar
+- `calendar_id` is `"primary"` for the default calendar of the account, or a specific calendar ID (found in Google Calendar Settings → Integrate calendar)
+- If a `watch` calendar is temporarily unreachable, the bot continues working with the remaining calendars
+- If the `book` calendar is unreachable, booking fails (no silent double-bookings)
+
 ## CLI commands
 
 | Command | Description |
