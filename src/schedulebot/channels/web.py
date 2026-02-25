@@ -534,6 +534,8 @@ class WebAdapter(ChannelAdapter):
                 ".desc{margin:12px 0 20px}"
                 ".dim{color:#888;font-size:0.9em}"
                 "ul{padding-left:20px}li{margin:6px 0}"
+                ".features{margin:16px 0 20px}"
+                ".features li{color:#444;font-size:0.95em}"
                 ".snippet{background:#f5f5f5;border:1px solid #ddd;border-radius:6px;"
                 "padding:12px 16px;margin:8px 0 16px;font-family:'SF Mono','Fira Code',"
                 "monospace;font-size:0.85em;white-space:pre-wrap;word-break:break-all;"
@@ -552,6 +554,14 @@ class WebAdapter(ChannelAdapter):
                 + (f"<p class='org'>{safe_org}</p>" if safe_org else "")
                 + f"<p class='desc'>{safe_desc}</p>"
                 + services_html
+                + "<h2>Features</h2>"
+                "<ul class='features'>"
+                "<li>Multi-calendar &mdash; checks availability across multiple Google accounts</li>"
+                "<li>Guest timezone &mdash; shows slots in guest's local time</li>"
+                "<li>Google Meet links &mdash; auto-generated for every booking</li>"
+                "<li>Self-service cancel &mdash; guests can cancel via link</li>"
+                "<li>MCP &amp; agent discovery &mdash; other AI agents book automatically</li>"
+                "</ul>"
                 + "<h2>Add to your AI agent</h2>"
                 f"<div class='snippet' id='prompt-snippet'>{prompt_snippet}"
                 "<button class='copy-btn' onclick=\"copyEl('prompt-snippet')\">Copy</button></div>"
