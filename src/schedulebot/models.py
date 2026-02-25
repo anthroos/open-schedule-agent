@@ -96,6 +96,7 @@ class Booking:
     attendee_emails: list[str] = field(default_factory=list)
     guest_timezone: str = ""
     notes: str = ""
+    calendar_name: str = ""
     cancel_token: str = ""
     reminder_sent: bool = False
     created_at: datetime = field(default_factory=datetime.now)

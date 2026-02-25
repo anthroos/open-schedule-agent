@@ -28,17 +28,29 @@ class AvailabilityConfig:
 
 
 @dataclass
+class CalendarSourceConfig:
+    """A single calendar source (one Google account + calendar ID)."""
+    name: str = "primary"
+    calendar_id: str = "primary"
+    credentials_path: str = "credentials.json"
+    token_path: str = "token.json"
+    role: str = "book"  # "book" = create events here, "watch" = read-only + blockers
+    create_meet_link: bool = True
+
+
+@dataclass
 class CalendarConfig:
     provider: str = "google"
     create_meet_link: bool = True
     credentials_path: str = "credentials.json"
     token_path: str = "token.json"
+    sources: list[CalendarSourceConfig] = field(default_factory=list)  # empty = single calendar mode
 
 
 @dataclass
 class LLMConfig:
     provider: str = "anthropic"
-    model: str = "claude-3-haiku-20240307"
+    model: str = "claude-haiku-4-5-20251001"
     base_url: str | None = None
 
 
@@ -121,7 +133,12 @@ def _resolve_dict(d: dict) -> dict:
         elif isinstance(v, dict):
             resolved[k] = _resolve_dict(v)
         elif isinstance(v, list):
-            resolved[k] = [_resolve_env_vars(i) if isinstance(i, str) else i for i in v]
+            resolved[k] = [
+                _resolve_env_vars(i) if isinstance(i, str)
+                else _resolve_dict(i) if isinstance(i, dict)
+                else i
+                for i in v
+            ]
         else:
             resolved[k] = v
     return resolved
@@ -180,17 +197,44 @@ def load_config(config_path: str | Path, env_path: str | Path | None = None) -> 
         creds_path = str(config_dir / creds_path)
     if not Path(tok_path).is_absolute():
         tok_path = str(config_dir / tok_path)
+
+    # Parse multi-calendar sources if present
+    sources = []
+    for src_data in raw.get("calendars", []):
+        if not isinstance(src_data, dict):
+            continue
+        src_creds = src_data.get("credentials_path", "credentials.json")
+        src_tok = src_data.get("token_path", "token.json")
+        if not Path(src_creds).is_absolute():
+            src_creds = str(config_dir / src_creds)
+        if not Path(src_tok).is_absolute():
+            src_tok = str(config_dir / src_tok)
+        role = src_data.get("role", "book")
+        if role not in ("book", "watch"):
+            raise ValueError(
+                f"calendars[{len(sources)}].role must be 'book' or 'watch', got '{role}'"
+            )
+        sources.append(CalendarSourceConfig(
+            name=src_data.get("name", "primary"),
+            calendar_id=src_data.get("calendar_id", "primary"),
+            credentials_path=src_creds,
+            token_path=src_tok,
+            role=role,
+            create_meet_link=src_data.get("create_meet_link", True),
+        ))
+
     calendar = CalendarConfig(
         provider=cal_data.get("provider", "google"),
         create_meet_link=cal_data.get("create_meet_link", True),
         credentials_path=creds_path,
         token_path=tok_path,
+        sources=sources,
     )
 
     llm_data = raw.get("llm", {})
     llm = LLMConfig(
         provider=llm_data.get("provider", "anthropic"),
-        model=llm_data.get("model", "claude-3-haiku-20240307"),
+        model=llm_data.get("model", "claude-haiku-4-5-20251001"),
         base_url=llm_data.get("base_url"),
     )
 

@@ -13,7 +13,7 @@ from schedulebot.cli import _build_llm
 @dataclass
 class FakeLLMConfig:
     provider: str = "anthropic"
-    model: str = "claude-haiku-4-20250414"
+    model: str = "claude-haiku-4-5-20251001"
     base_url: str | None = None
 
 
@@ -30,7 +30,7 @@ class TestAutoDetectAnthropicToOpenAI:
     """When configured for Anthropic but only OpenAI key is set."""
 
     def test_switches_to_openai(self):
-        config = FakeConfig(llm=FakeLLMConfig(provider="anthropic", model="claude-haiku-4-20250414"))
+        config = FakeConfig(llm=FakeLLMConfig(provider="anthropic", model="claude-haiku-4-5-20251001"))
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
@@ -63,19 +63,19 @@ class TestAutoDetectOpenAIToAnthropic:
         with patch.dict("os.environ", env, clear=False):
             with patch.dict("os.environ", {"OPENAI_API_KEY": ""}, clear=False):
                 llm, _, _ = _build_llm(config)
-        assert llm.model == "claude-haiku-4-20250414"
+        assert llm.model == "claude-haiku-4-5-20251001"
 
 
 class TestNoAutoDetect:
     """When the configured provider's key is present — no switching."""
 
     def test_anthropic_stays_anthropic(self):
-        config = FakeConfig(llm=FakeLLMConfig(provider="anthropic", model="claude-haiku-4-20250414"))
+        config = FakeConfig(llm=FakeLLMConfig(provider="anthropic", model="claude-haiku-4-5-20251001"))
         env = {"ANTHROPIC_API_KEY": "sk-ant-test"}
         with patch.dict("os.environ", env, clear=False):
             llm, _, _ = _build_llm(config)
         assert type(llm).__name__ == "AnthropicProvider"
-        assert llm.model == "claude-haiku-4-20250414"
+        assert llm.model == "claude-haiku-4-5-20251001"
 
     def test_openai_stays_openai(self):
         config = FakeConfig(llm=FakeLLMConfig(provider="openai", model="gpt-4o"))

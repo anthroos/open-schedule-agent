@@ -86,6 +86,10 @@ MIGRATIONS = [
     [
         "ALTER TABLE bookings ADD COLUMN guest_timezone TEXT DEFAULT ''",
     ],
+    # Migration 7: Add calendar_name to bookings (multi-calendar support)
+    [
+        "ALTER TABLE bookings ADD COLUMN calendar_name TEXT DEFAULT ''",
+    ],
 ]
 
 
@@ -205,8 +209,9 @@ class Database:
                 """INSERT INTO bookings
                 (id, guest_name, guest_channel, guest_sender_id, guest_email, topic,
                  attendee_emails, slot_start, slot_end,
-                 calendar_event_id, meet_link, notes, cancel_token, guest_timezone, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 calendar_event_id, meet_link, notes, cancel_token, guest_timezone,
+                 calendar_name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     booking.id,
                     booking.guest_name,
@@ -222,6 +227,7 @@ class Database:
                     booking.notes,
                     booking.cancel_token,
                     booking.guest_timezone,
+                    booking.calendar_name,
                     booking.created_at.isoformat(),
                 ),
             )
@@ -249,7 +255,8 @@ class Database:
             self.conn.execute(
                 """UPDATE bookings SET guest_name=?, guest_channel=?, guest_sender_id=?,
                 guest_email=?, topic=?, attendee_emails=?, calendar_event_id=?,
-                meet_link=?, notes=?, cancel_token=?, guest_timezone=? WHERE id=?""",
+                meet_link=?, notes=?, cancel_token=?, guest_timezone=?, calendar_name=?
+                WHERE id=?""",
                 (
                     booking.guest_name,
                     booking.guest_channel,
@@ -262,6 +269,7 @@ class Database:
                     booking.notes,
                     booking.cancel_token,
                     booking.guest_timezone,
+                    booking.calendar_name,
                     booking.id,
                 ),
             )
@@ -292,6 +300,7 @@ class Database:
             meet_link=row["meet_link"],
             notes=row["notes"],
             guest_timezone=row["guest_timezone"] if "guest_timezone" in keys else "",
+            calendar_name=row["calendar_name"] if "calendar_name" in keys else "",
             cancel_token=row["cancel_token"] if "cancel_token" in keys else "",
             reminder_sent=bool(row["reminder_sent"]) if "reminder_sent" in keys else False,
             created_at=datetime.fromisoformat(row["created_at"]),

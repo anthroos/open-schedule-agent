@@ -102,7 +102,7 @@ class TestCancelURLInConfirmation:
             async def chat(self, *a):
                 return ""
 
-        db_dummy = type("DB", (), {"get_availability_rules": lambda s: []})()
+        db_dummy = type("DB", (), {"get_availability_rules": lambda s: [], "get_setting": lambda s, k, default=None: default})()
         engine = SchedulingEngine(config, DummyCalendar(), DummyLLM(), db_dummy)
 
         now = datetime.now(timezone.utc)
@@ -135,7 +135,7 @@ class TestCancelURLInConfirmation:
             async def chat(self, *a):
                 return ""
 
-        db_dummy = type("DB", (), {"get_availability_rules": lambda s: []})()
+        db_dummy = type("DB", (), {"get_availability_rules": lambda s: [], "get_setting": lambda s, k, default=None: default})()
         engine = SchedulingEngine(config, DummyCalendar(), DummyLLM(), db_dummy)
 
         booking = _make_booking()

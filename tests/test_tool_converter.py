@@ -59,7 +59,10 @@ def test_owner_tools_conversion():
     result = anthropic_tools_to_openai(OWNER_TOOLS)
     assert len(result) == len(OWNER_TOOLS)
     names = {t["function"]["name"] for t in result}
-    assert names == {"add_rule", "block_time", "clear_rules", "clear_all", "show_rules"}
+    assert names == {
+        "add_rule", "delete_rule", "block_time", "clear_rules", "clear_all",
+        "show_rules", "set_timezone", "show_bookings", "cancel_booking",
+    }
 
 
 def test_required_field_preserved():

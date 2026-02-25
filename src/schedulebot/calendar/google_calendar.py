@@ -20,9 +20,10 @@ logger = logging.getLogger(__name__)
 class GoogleCalendarProvider(CalendarProvider):
     """Google Calendar API integration."""
 
-    def __init__(self, config: CalendarConfig, timezone: str = "UTC"):
+    def __init__(self, config: CalendarConfig, timezone: str = "UTC", calendar_id: str = "primary"):
         self.config = config
         self.timezone = timezone
+        self.calendar_id = calendar_id
         self._service = None
 
     @property
@@ -41,7 +42,7 @@ class GoogleCalendarProvider(CalendarProvider):
             "timeMin": start.isoformat(),
             "timeMax": end.isoformat(),
             "timeZone": self.timezone,
-            "items": [{"id": "primary"}],
+            "items": [{"id": self.calendar_id}],
         }
 
         result = await retry_async(
@@ -50,7 +51,7 @@ class GoogleCalendarProvider(CalendarProvider):
         )
         busy_slots = []
 
-        for period in result.get("calendars", {}).get("primary", {}).get("busy", []):
+        for period in result.get("calendars", {}).get(self.calendar_id, {}).get("busy", []):
             busy_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00"))
             busy_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00"))
             busy_slots.append(TimeSlot(start=busy_start, end=busy_end))
@@ -103,7 +104,7 @@ class GoogleCalendarProvider(CalendarProvider):
         created = await retry_async(
             self.service.events()
             .insert(
-                calendarId="primary",
+                calendarId=self.calendar_id,
                 body=event_body,
                 conferenceDataVersion=conference_version,
             )
@@ -128,7 +129,7 @@ class GoogleCalendarProvider(CalendarProvider):
     async def delete_event(self, event_id: str) -> None:
         """Delete a Google Calendar event."""
         await retry_async(
-            self.service.events().delete(calendarId="primary", eventId=event_id).execute,
+            self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute,
             label="google.delete_event",
         )
         logger.info(f"Deleted event: {event_id}")

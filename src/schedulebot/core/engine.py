@@ -994,6 +994,7 @@ class SchedulingEngine:
                 calendar_event_id=event.get("event_id"),
                 meet_link=event.get("meet_link"),
                 guest_timezone=conv.guest_timezone,
+                calendar_name=event.get("calendar_name", ""),
                 cancel_token=cancel_token,
             )
             if reservation_id:

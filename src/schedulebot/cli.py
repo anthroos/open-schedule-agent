@@ -140,14 +140,14 @@ def cmd_slots(args: argparse.Namespace) -> None:
     """Display available slots for debugging."""
     import os
     from .config import load_config
-    from .calendar.google_calendar import GoogleCalendarProvider
+    from .calendar.factory import build_calendar_provider
     from .core.availability import AvailabilityEngine
     from .database import Database
 
     config = load_config(args.config)
     if args.days:
         config.availability.max_days_ahead = args.days
-    calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
+    calendar = build_calendar_provider(config.calendar, config.availability.timezone)
     db_path = os.environ.get("DATABASE_PATH", "schedulebot.db")
     db = Database(db_path)
     db.connect()
@@ -170,7 +170,7 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     """Run the MCP server (stdio transport for local testing / Claude Desktop)."""
     import os
     from .config import load_config
-    from .calendar.google_calendar import GoogleCalendarProvider
+    from .calendar.factory import build_calendar_provider
     from .core.availability import AvailabilityEngine
     from .database import Database
     from .mcp_server import create_mcp_server
@@ -183,7 +183,7 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     db = Database(os.environ.get("DATABASE_PATH", "schedulebot.db"))
     db.connect()
-    calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
+    calendar = build_calendar_provider(config.calendar, config.availability.timezone)
     availability = AvailabilityEngine(config.availability, calendar, db)
 
     mcp = create_mcp_server(config, availability, calendar, db)
@@ -211,7 +211,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 async def _run_bot(config) -> None:
     """Set up and run all enabled channels."""
-    from .calendar.google_calendar import GoogleCalendarProvider
+    from .calendar.factory import build_calendar_provider
     from .core.engine import SchedulingEngine
     from .database import Database
 
@@ -220,7 +220,7 @@ async def _run_bot(config) -> None:
     db = Database(db_path)
     db.connect()
 
-    calendar = GoogleCalendarProvider(config.calendar, config.availability.timezone)
+    calendar = build_calendar_provider(config.calendar, config.availability.timezone)
     llm, _, _ = _build_llm(config)
     engine = SchedulingEngine(config, calendar, llm, db)
 
@@ -378,7 +378,7 @@ def _build_llm(config):
         model = "gpt-4o-mini"
         logger.info("[auto-detect] Model adjusted to %s", model)
     elif provider == "anthropic" and model.startswith("gpt"):
-        model = "claude-3-haiku-20240307"
+        model = "claude-haiku-4-5-20251001"
         logger.info("[auto-detect] Model adjusted to %s", model)
 
     if provider == "anthropic":

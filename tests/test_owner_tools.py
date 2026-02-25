@@ -395,7 +395,10 @@ async def test_tools_definitions_passed_to_llm(config, db):
     assert len(llm.calls) == 1
     tools = llm.calls[0]["tools"]
     tool_names = {t["name"] for t in tools}
-    assert tool_names == {"add_rule", "block_time", "clear_rules", "clear_all", "show_rules"}
+    assert tool_names == {
+        "add_rule", "delete_rule", "block_time", "clear_rules", "clear_all",
+        "show_rules", "set_timezone", "show_bookings", "cancel_booking",
+    }
 
 
 @pytest.mark.asyncio

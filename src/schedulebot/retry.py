@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504, 529}
 
 
 async def retry_async(
@@ -51,7 +51,7 @@ def _is_retryable(exc: Exception) -> bool:
     exc_type = type(exc).__name__
 
     # Anthropic SDK errors
-    if exc_type in ("RateLimitError", "InternalServerError", "APIConnectionError"):
+    if exc_type in ("RateLimitError", "InternalServerError", "APIConnectionError", "OverloadedError"):
         return True
     if exc_type == "APIStatusError" and hasattr(exc, "status_code"):
         return exc.status_code in TRANSIENT_HTTP_CODES  # type: ignore[union-attr]
