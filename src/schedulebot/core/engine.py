@@ -328,8 +328,8 @@ class SchedulingEngine:
                     system_prompt, api_messages, OWNER_TOOLS
                 )
             except Exception as e:
-                logger.error(f"LLM tool call failed (owner): {e}")
-                return "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
+                logger.error(f"LLM tool call failed (owner): {type(e).__name__}: {e}", exc_info=True)
+                return f"LLM error: {type(e).__name__}: {e}\n\nUse /schedule to view rules or /clear to reset."
 
             if not result.tool_calls:
                 # No tools called — LLM produced final text
@@ -380,8 +380,8 @@ class SchedulingEngine:
         try:
             response_text = await self.llm.chat(system_prompt, conv.messages)
         except Exception as e:
-            logger.error(f"LLM call failed (owner): {e}")
-            return "Sorry, LLM error. Use /schedule to view rules or /clear to reset."
+            logger.error(f"LLM call failed (owner): {type(e).__name__}: {e}", exc_info=True)
+            return f"LLM error: {type(e).__name__}: {e}\n\nUse /schedule to view rules or /clear to reset."
 
         # Parse and execute owner actions
         response_text = self._execute_owner_actions(response_text)
@@ -688,7 +688,7 @@ class SchedulingEngine:
                     system_prompt, api_messages, GUEST_TOOLS
                 )
             except Exception as e:
-                logger.error(f"LLM tool call failed (guest): {e}")
+                logger.error(f"LLM tool call failed (guest): {type(e).__name__}: {e}", exc_info=True)
                 response = "Sorry, I'm having trouble right now. Please try again in a moment."
                 conv.add_message("assistant", response)
                 return OutgoingMessage(text=response)
