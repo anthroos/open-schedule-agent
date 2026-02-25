@@ -41,6 +41,9 @@ MAX_NAME_LENGTH = 100
 MAX_TOPIC_LENGTH = 200
 OWNER_MAX_MESSAGE_LENGTH = 2000
 OWNER_RATE_LIMIT_MESSAGES = 30
+SESSION_MESSAGE_LIMIT = 15  # max user messages per conversation
+DAILY_MESSAGE_LIMIT = 30  # max user messages per sender per day
+_DAILY_WINDOW = 86400  # 24 hours in seconds
 EMAIL_RE = re.compile(
     r"^[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]{0,62}[a-zA-Z0-9])?@"
     r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
@@ -70,6 +73,9 @@ INJECTION_PATTERNS = [
 _rate_limiter: dict[str, list[float]] = {}
 _rate_limiter_cleanup_counter = 0
 _RATE_LIMITER_MAX_KEYS = 10000
+
+# Daily message counter: sender_id -> list of timestamps (last 24h)
+_daily_counter: dict[str, list[float]] = {}
 
 
 def _sanitize_text(value: str) -> str:
@@ -172,8 +178,18 @@ class SchedulingEngine:
             lines.append(line)
         return "\n".join(lines)
 
+    _cleanup_counter = 0
+
     async def handle_message(self, msg: IncomingMessage) -> OutgoingMessage:
         """Process an incoming message. Routes to owner or guest flow."""
+        # Periodic cleanup of stale conversations (every 50 messages)
+        SchedulingEngine._cleanup_counter += 1
+        if SchedulingEngine._cleanup_counter >= 50:
+            SchedulingEngine._cleanup_counter = 0
+            cleaned = self.db.cleanup_stale_conversations(max_age_hours=24)
+            if cleaned:
+                logger.info("Cleaned up %d stale conversations", cleaned)
+
         if self._is_owner(msg.channel, msg.sender_id):
             return await self._handle_owner_message(msg)
 
@@ -217,6 +233,19 @@ class SchedulingEngine:
             if len(_rate_limiter) > _RATE_LIMITER_MAX_KEYS:
                 for k in list(_rate_limiter)[:len(_rate_limiter) - _RATE_LIMITER_MAX_KEYS]:
                     del _rate_limiter[k]
+            # Clean daily counter too
+            stale_daily = [k for k, v in _daily_counter.items() if not v or now - v[-1] > _DAILY_WINDOW]
+            for k in stale_daily:
+                del _daily_counter[k]
+
+        # Daily quota
+        daily_history = _daily_counter.get(msg.sender_id, [])
+        daily_history = [t for t in daily_history if now - t < _DAILY_WINDOW]
+        if len(daily_history) >= DAILY_MESSAGE_LIMIT:
+            logger.warning("Daily quota exceeded for %s", msg.sender_id)
+            return "You've reached the daily message limit. Please come back tomorrow, or send /start to book a meeting."
+        daily_history.append(now)
+        _daily_counter[msg.sender_id] = daily_history
 
         # Prompt injection
         for pattern in INJECTION_PATTERNS:
@@ -645,6 +674,14 @@ class SchedulingEngine:
         conv = self.db.get_conversation(msg.sender_id)
         if not conv:
             conv = Conversation(sender_id=msg.sender_id, channel=msg.channel)
+
+        # Session message limit (count user messages only)
+        user_msg_count = sum(1 for m in conv.messages if m["role"] == "user")
+        if user_msg_count >= SESSION_MESSAGE_LIMIT:
+            self.db.delete_conversation(msg.sender_id)
+            return OutgoingMessage(
+                text=f"Let's start fresh! Send /start to book a meeting with {self.config.owner.name}."
+            )
 
         conv.add_message("user", msg.text)
 
