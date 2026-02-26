@@ -13,6 +13,7 @@ from .core.availability import AvailabilityEngine
 from .calendar.base import CalendarProvider
 from .database import Database
 from .models import Booking, TimeSlot
+from .timezone_resolver import resolve_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,12 @@ def create_mcp_server(
     mcp = FastMCP(
         "schedulebot",
         instructions=f"Schedule meetings with {config.owner.name}. "
+        f"Owner timezone: {config.availability.timezone}. "
         f"Use get_available_slots() to see open times, then book_consultation() to book. "
-        f"Check get_pricing() for timezone info.",
+        f"Both tools accept an optional client_timezone parameter "
+        f"(IANA name like America/Denver, city name like Denver, or abbreviation like MST). "
+        f"ALWAYS pass client_timezone when the client is in a different timezone — "
+        f"it ensures correct date/time conversion and shows slots in the client's local time.",
         streamable_http_path="/",
         host="0.0.0.0",  # Disable auto DNS rebinding protection (runs behind reverse proxy)
     )
@@ -58,6 +63,15 @@ def create_mcp_server(
     def _get_tz() -> ZoneInfo:
         """Always read the current timezone from the availability engine."""
         return availability.tz
+
+    def _resolve_client_tz(client_timezone: str | None) -> ZoneInfo | None:
+        """Resolve client_timezone string to ZoneInfo, or None if not given."""
+        if not client_timezone:
+            return None
+        iana = resolve_timezone(client_timezone)
+        if not iana:
+            return None
+        return ZoneInfo(iana)
 
     @mcp.tool()
     async def get_services() -> list[dict]:
@@ -87,6 +101,7 @@ def create_mcp_server(
     async def get_available_slots(
         date: Optional[str] = None,
         service: Optional[str] = None,
+        client_timezone: Optional[str] = None,
     ) -> list[dict]:
         """Get available time slots for booking a consultation.
 
@@ -94,10 +109,27 @@ def create_mcp_server(
             date: Specific date in YYYY-MM-DD format. Returns slots for that day only.
                   If not given, returns slots for the next 14 days.
             service: Service slug to filter by duration. Use get_services() to see available slugs.
+            client_timezone: Client's timezone as IANA name (America/Denver), city (Denver),
+                  or abbreviation (MST). When provided, date is interpreted in this timezone
+                  and slots include display_local in client's time.
         """
+        client_tz = _resolve_client_tz(client_timezone)
+        if client_timezone and not client_tz:
+            return [{"error": f"Unknown timezone: {client_timezone}. "
+                     "Use IANA format (America/Denver), city name (Denver), or abbreviation (MST)."}]
+
         from_date = None
         if date:
-            from_date = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=_get_tz())
+            try:
+                parsed_date = datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                return [{"error": "Invalid date format. Use YYYY-MM-DD."}]
+
+            if client_tz:
+                # Interpret date in client's timezone, convert to owner TZ
+                from_date = parsed_date.replace(tzinfo=client_tz).astimezone(_get_tz())
+            else:
+                from_date = parsed_date.replace(tzinfo=_get_tz())
 
         slots = await availability.get_available_slots(from_date)
 
@@ -112,14 +144,19 @@ def create_mcp_server(
                 duration = timedelta(minutes=svc.duration_minutes)
                 slots = [s for s in slots if (s.end - s.start) >= duration]
 
-        return [
-            {
+        result = []
+        for s in slots:
+            entry = {
                 "start": s.start.isoformat(),
                 "end": s.end.isoformat(),
                 "display": str(s),
             }
-            for s in slots
-        ]
+            if client_tz:
+                entry["display_local"] = s.format_in_tz(client_tz)
+                entry["start_local"] = s.start.astimezone(client_tz).isoformat()
+                entry["end_local"] = s.end.astimezone(client_tz).isoformat()
+            result.append(entry)
+        return result
 
     @mcp.tool()
     async def get_pricing() -> dict:
@@ -149,6 +186,7 @@ def create_mcp_server(
         client_name: str,
         client_email: str,
         service: Optional[str] = None,
+        client_timezone: Optional[str] = None,
     ) -> dict:
         """Book a consultation at the specified date and time. Creates a Google Calendar event with Meet link.
 
@@ -158,7 +196,15 @@ def create_mcp_server(
             client_name: Full name of the person booking.
             client_email: Email address of the person booking.
             service: Optional service slug. Defaults to standard meeting duration.
+            client_timezone: Client's timezone as IANA name (America/Denver), city (Denver),
+                  or abbreviation (MST). When provided, date and time are interpreted in
+                  this timezone and automatically converted to the owner's timezone.
         """
+        client_tz = _resolve_client_tz(client_timezone)
+        if client_timezone and not client_tz:
+            return {"error": f"Unknown timezone: {client_timezone}. "
+                    "Use IANA format (America/Denver), city name (Denver), or abbreviation (MST)."}
+
         # Input length validation
         if len(client_name) > 100:
             return {"error": "client_name too long (max 100 characters)."}
@@ -184,7 +230,11 @@ def create_mcp_server(
                 return {"error": f"Unknown service: {service}. Use get_services() to see available options."}
 
         try:
-            start = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M").replace(tzinfo=_get_tz())
+            parsed = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+            if client_tz:
+                start = parsed.replace(tzinfo=client_tz).astimezone(_get_tz())
+            else:
+                start = parsed.replace(tzinfo=_get_tz())
         except ValueError:
             return {"error": "Invalid date/time format. Use YYYY-MM-DD for date and HH:MM for time."}
 
@@ -199,8 +249,8 @@ def create_mcp_server(
         end = start + timedelta(minutes=duration_minutes)
         slot = TimeSlot(start=start, end=end)
 
-        # Verify slot is available
-        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=_get_tz())
+        # Verify slot is available (use the owner-TZ date of the converted start)
+        day_start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         available_slots = await availability.get_available_slots(day_start)
         slot_available = any(
             s.start <= start and s.end >= end for s in available_slots
@@ -215,6 +265,11 @@ def create_mcp_server(
 
         cancel_token = secrets.token_urlsafe(32)
 
+        guest_tz_name = ""
+        if client_tz:
+            iana = resolve_timezone(client_timezone)
+            guest_tz_name = iana or client_timezone
+
         if config.dry_run:
             booking = Booking(
                 id=reservation_id,
@@ -226,6 +281,7 @@ def create_mcp_server(
                 calendar_event_id="dry-run",
                 meet_link="https://meet.google.com/dry-run",
                 cancel_token=cancel_token,
+                guest_timezone=guest_tz_name,
             )
             db.finalize_booking(booking)
             result = {
@@ -235,6 +291,8 @@ def create_mcp_server(
                 "duration_minutes": duration_minutes,
                 "meet_link": booking.meet_link,
             }
+            if client_tz:
+                result["datetime_client"] = start.astimezone(client_tz).isoformat()
             cancel_url = _build_cancel_url(config, cancel_token)
             if cancel_url:
                 result["cancel_url"] = cancel_url
@@ -265,6 +323,7 @@ def create_mcp_server(
             meet_link=event.get("meet_link"),
             notes=f"Service: {service}" if service else "",
             cancel_token=cancel_token,
+            guest_timezone=guest_tz_name,
         )
         db.finalize_booking(booking)
 
@@ -284,6 +343,8 @@ def create_mcp_server(
             "client_name": client_name,
             "client_email": client_email,
         }
+        if client_tz:
+            result["datetime_client"] = start.astimezone(client_tz).isoformat()
         if booking.meet_link:
             result["meet_link"] = booking.meet_link
         cancel_url = _build_cancel_url(config, cancel_token)
